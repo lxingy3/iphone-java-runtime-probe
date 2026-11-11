@@ -27,3 +27,6 @@ jobs:
             build/RuntimeProbe.ipa
             build/build.log
             build/module-check.json
+            build/OpenJDK.xcframework
+            build/runtime
+            build/DeviceProbe.jar
