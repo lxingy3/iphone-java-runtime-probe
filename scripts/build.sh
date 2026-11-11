@@ -285,6 +285,16 @@ xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$
   -fobjc-arc -fmodules -O2 -DRP_EMBEDDED_LIBRARY=1 -I"$framework_headers" \
   -c App/main.m -o "$kit/RuntimeHostKit.o"
 libtool -static -o "$kit/libRuntimeHostKit.a" "$kit/RuntimeHostKit.o"
+# Optional same-process and observation libraries. They contain no game executable,
+# server payload, account data, client-specific offsets, or cryptographic keys.
+xcrun --sdk "$sdk_name" clang -dynamiclib -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
+  -Wl,-all_load "$kit/libRuntimeHostKit.a" "$framework_library" \
+  -framework UIKit -framework Foundation -framework BackgroundTasks -lc++ -lz \
+  -install_name @loader_path/RuntimeHost.dylib -o "$kit/RuntimeHost.dylib"
+xcrun --sdk "$sdk_name" clang -dynamiclib -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
+  -fobjc-arc -fmodules -O2 -DRP_CLIENT_OBSERVER_ONLY=1 App/main.m "$kit/RuntimeHost.dylib" \
+  -framework UIKit -framework Foundation -install_name @executable_path/Frameworks/RuntimeClientProbe.dylib \
+  -o "$kit/RuntimeClientProbe.dylib"
 cat > "$kit/RuntimeHostKit.h" <<'HEADER'
 #import <Foundation/Foundation.h>
 // Call on the main thread. The host owns its application and scenes.
