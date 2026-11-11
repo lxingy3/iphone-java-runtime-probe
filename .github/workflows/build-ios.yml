@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Build a device IPA or run Duo simulator acceptance
+        description: Build a device IPA or select a simulator profile
         type: choice
-        options: [device, simulator]
+        options: [device, simulator, simulator-standard]
         default: device
 permissions:
   contents: read
@@ -27,15 +27,16 @@ jobs:
       - name: Download previously verified runtime
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_ID: ${{ inputs.target == 'simulator' && '13853813081' || '13854995214' }}
+          ARTIFACT_ID: ${{ inputs.target != 'device' && '13853813081' || '13854995214' }}
         run: |
           mkdir -p build
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > build/verified-runtime.zip
       - name: Build and verify native app
         env:
-          PROBE_SDK: ${{ inputs.target == 'simulator' && 'iphonesimulator' || 'iphoneos' }}
+          PROBE_SDK: ${{ inputs.target != 'device' && 'iphonesimulator' || 'iphoneos' }}
+          PROBE_DEVICE_CLASS: ${{ inputs.target == 'simulator-standard' && 'standard' || 'duo' }}
           PROBE_RUNTIME_ARCHIVE: build/verified-runtime.zip
-          PROBE_RUNTIME_SHA256: ${{ inputs.target == 'simulator' && 'dafa3dbbf5002b767d2c1a372192aa42a914bef3cb447020cedf74a20f8f630d' || '5372283f51e83787b92df5f738d350e38373ae5d151cdc014e3b835d9fc78d25' }}
+          PROBE_RUNTIME_SHA256: ${{ inputs.target != 'device' && 'dafa3dbbf5002b767d2c1a372192aa42a914bef3cb447020cedf74a20f8f630d' || '5372283f51e83787b92df5f738d350e38373ae5d151cdc014e3b835d9fc78d25' }}
         run: bash scripts/build.sh
       - name: Retain build results
         if: always()
