@@ -343,7 +343,7 @@ mkdir -p "$fixture/Frameworks"
 cp "$kit/RuntimeHost.dylib" "$kit/RuntimeClientProbe.dylib" "$fixture/Frameworks/"
 xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
   -fobjc-arc -fmodules -O2 -DRP_CLIENT_FIXTURE=1 App/main.m \
-  "$kit/RuntimeClientProbe.dylib" -framework UIKit -framework Foundation \
+  "$kit/RuntimeClientProbe.dylib" "$kit/RuntimeHost.dylib" -framework UIKit -framework Foundation \
   -o "$fixture/ObserverFixture"
 python3 - <<'PY'
 import pathlib,plistlib,shutil
@@ -359,8 +359,14 @@ q=pathlib.Path('build/ObserverFixtureWrong.app')
 shutil.copytree(p,q,dirs_exist_ok=True)
 info['CFBundleIdentifier']='local.astaps.ObserverFixtureWrong'
 (q/'Info.plist').write_bytes(plistlib.dumps(info))
+r=pathlib.Path('build/ObserverFixtureEmbedded.app')
+shutil.copytree(p,r,dirs_exist_ok=True)
+info['CFBundleIdentifier']='local.astaps.ObserverFixture.Embedded'
+(r/'Info.plist').write_bytes(plistlib.dumps(info))
+shutil.copytree('build/runtime',r/'LocalRuntime/runtime',dirs_exist_ok=True)
+for name in ['DeviceProbe.jar','RuntimePatch.jar']: shutil.copy2('build/'+name,r/'LocalRuntime'/name)
 PY
-for fixture_path in "$fixture" "$project_root/build/ObserverFixtureWrong.app"; do
+for fixture_path in "$fixture" "$project_root/build/ObserverFixtureWrong.app" "$project_root/build/ObserverFixtureEmbedded.app"; do
   codesign --force --sign - "$fixture_path/Frameworks/RuntimeHost.dylib"
   codesign --force --sign - "$fixture_path/Frameworks/RuntimeClientProbe.dylib"
   codesign --force --sign - "$fixture_path"
@@ -398,8 +404,8 @@ result={'passed':False,'error':'No report before timeout'}
 try:
     if device['state']!='Booted': command('xcrun','simctl','boot',udid)
     command('xcrun','simctl','bootstatus',udid,'-b',timeout=240)
-    for variant,arguments in [('ObserverFixture',[]),('ObserverFixtureWrong',['--expect-observer-disabled'])]:
-        bundle='local.astaps.'+variant
+    for variant,arguments in [('ObserverFixture',[]),('ObserverFixtureWrong',['--expect-observer-disabled']),('ObserverFixtureEmbedded',['--probe-embedded-runtime'])]:
+        bundle='local.astaps.ObserverFixture.Embedded' if variant=='ObserverFixtureEmbedded' else 'local.astaps.'+variant
         command('xcrun','simctl','install',udid,'build/'+variant+'.app')
         fixture_container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,bundle,'data').stdout.strip())
         command('xcrun','simctl','launch','--terminate-running-process',udid,bundle,*arguments,timeout=60)
@@ -413,6 +419,17 @@ try:
         (output/(variant+'.json')).write_text(json.dumps(fixture_result,indent=2))
         observations=fixture_container/'Documents/RuntimeIntegration/client-observations.json'
         if observations.is_file(): shutil.copy2(observations,output/(variant+'-observations.json'))
+        if variant=='ObserverFixtureEmbedded':
+            embedded_report=fixture_container/'Documents/embedded-fixture.json'
+            for _ in range(120):
+                if embedded_report.is_file(): break
+                time.sleep(1)
+            embedded=json.loads(embedded_report.read_text()) if embedded_report.is_file() else {'passed':False,'error':'No dynamic JVM report'}
+            fixture_result['embedded_runtime']=embedded
+            fixture_result['passed']=fixture_result.get('passed') is True and embedded.get('passed') is True
+            (output/(variant+'.json')).write_text(json.dumps(fixture_result,indent=2))
+            for evidence in [fixture_container/'Documents/embedded-request.json',fixture_container/'Documents/EmbeddedRuntime/host-status.json',fixture_container/'Documents/EmbeddedRuntime/runtime-probe.json']:
+                if evidence.is_file(): shutil.copy2(evidence,output/(variant+'-'+evidence.name))
         command('xcrun','simctl','terminate',udid,bundle,check=False,timeout=30)
     command('xcrun','simctl','install',udid,'build/DerivedData/Build/Products/Release-iphonesimulator/RuntimeProbe.app')
     container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,'local.astaps.RuntimeProbe','data').stdout.strip())
@@ -429,7 +446,7 @@ try:
     result['checksum_benchmark']=json.loads(benchmark.read_text()) if benchmark.is_file() else {'passed':False,'error':'Missing checksum benchmark'}
     parser_report=container/'Documents/background-parser-tests.json'
     result['background_parser']=json.loads(parser_report.read_text()) if parser_report.is_file() else {'passed':False,'error':'Missing parser tests'}
-    result['passed']=result.get('passed') is True and result['checksum_benchmark'].get('passed') is True and result['background_parser'].get('passed') is True and len(observer_results)==2 and all(x.get('passed') is True for x in observer_results)
+    result['passed']=result.get('passed') is True and result['checksum_benchmark'].get('passed') is True and result['background_parser'].get('passed') is True and len(observer_results)==3 and all(x.get('passed') is True for x in observer_results)
 except Exception as failure:
     result={'passed':False,'error':repr(failure)}
 finally:
