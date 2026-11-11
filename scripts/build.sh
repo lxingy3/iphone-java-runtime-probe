@@ -28,9 +28,34 @@ case "$sdk_name" in
   *) echo "Unsupported test SDK: $sdk_name" >&2; exit 2 ;;
 esac
 export PROBE_SDK="$sdk_name"
+python3 - <<'PY'
+import json,os,pathlib,subprocess
+sdk=subprocess.check_output(['xcrun','--sdk',os.environ['PROBE_SDK'],'--show-sdk-version'],text=True).strip()
+assert tuple(map(int,sdk.split('.')[:2])) >= (27,1), 'Duo layout requires iOS 27.1 SDK or newer'
+version=subprocess.check_output(['xcodebuild','-version'],text=True).strip()
+pathlib.Path('build/toolchain.json').write_text(json.dumps({'sdk':sdk,'xcode':version},indent=2))
+print(version, 'SDK', sdk)
+PY
 for command_name in xcodebuild xcrun xcodegen git python3 javac jar gmake autoconf; do
   command -v "$command_name" >/dev/null || { echo "Missing build tool: $command_name"; exit 2; }
 done
+if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then
+python3 - <<'PY'
+import hashlib,json,os,pathlib,zipfile
+archive=pathlib.Path(os.environ['PROBE_RUNTIME_ARCHIVE'])
+expected=os.environ['PROBE_RUNTIME_SHA256']
+assert hashlib.sha256(archive.read_bytes()).hexdigest()==expected, 'Runtime archive checksum mismatch'
+with zipfile.ZipFile(archive) as z:
+    for entry in z.infolist():
+        p=pathlib.PurePosixPath(entry.filename)
+        if p.parts[0] not in {'OpenJDK.xcframework','runtime','module-check.json'}: continue
+        if p.is_absolute() or '..' in p.parts: raise ValueError('Invalid runtime archive path')
+        z.extract(entry,'build')
+report=json.loads(pathlib.Path('build/module-check.json').read_text())
+assert not report['missing'] and len(report['modules'])==18
+print('Reused checksum-verified runtime archive:', expected)
+PY
+else
 mobile_commit=c13417aa36f8f44755d0984b58aa735d0b41f233
 if [[ ! -d build/mobile/.git ]]; then
   git init build/mobile
@@ -211,6 +236,7 @@ if [[ -e build/OpenJDK.xcframework ]]; then
   echo 'Framework already exists; use a clean checkout to rebuild.' >&2; exit 3
 fi
 xcodebuild -create-xcframework -library "$project_root/build/libOpenJDK.a" -headers "$project_root/build/include" -output "$project_root/build/OpenJDK.xcframework"
+fi
 mkdir -p build/java
 javac --release 21 -encoding UTF-8 -d build/java Java/DeviceProbe.java
 jar --create --file build/DeviceProbe.jar -C build/java .
@@ -239,7 +265,12 @@ def command(*args,check=True,timeout=180):
 inventory=json.loads(command('xcrun','simctl','list','devices','available','--json').stdout)
 devices=[d for runtime,items in inventory['devices'].items() if '.iOS-' in runtime for d in items if d['name'].startswith('iPhone')]
 if not devices: raise SystemExit('No available iPhone simulator runtime')
-device=next((d for d in devices if d['state']=='Booted'),devices[0]);udid=device['udid']
+duo=[d for d in devices if d['name']=='iPhone Duo']
+if not duo: raise SystemExit('Duo acceptance requires an available iPhone Duo simulator')
+device=duo[0];udid=device['udid']
+(output/'device.json').write_text(json.dumps({'name':device['name'],'environment':'simulator'},indent=2))
+command('xcrun','simctl','help',check=False)
+command('xcrun','simctl','io',udid,'help',check=False)
 container=None
 result={'passed':False,'error':'No report before timeout'}
 try:
@@ -261,7 +292,7 @@ except Exception as failure:
 finally:
     if container:
         for source in (container/'Documents').glob('*'):
-            if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log'] or source.name.startswith('hs_err_pid')):
+            if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log','host-status.json','layout-history.json'] or source.name.startswith('hs_err_pid')):
                 shutil.copy2(source,output/source.name)
     try: command('xcrun','simctl','io',udid,'screenshot',str(output/'screen.png'),check=False,timeout=30)
     except Exception as failure: log('Screenshot unavailable: '+repr(failure))
@@ -275,4 +306,4 @@ fi
 mkdir -p build/Payload
 cp -R build/DerivedData/Build/Products/Release-iphoneos/RuntimeProbe.app build/Payload/
 (cd build && zip -qr RuntimeProbe.ipa Payload)
-echo 'Unsigned experimental IPA created. Real iPhone execution is not yet verified.'
+echo 'Unsigned 0.2 experimental IPA created. This revision requires physical-device validation.'
