@@ -24,7 +24,7 @@ if [[ ! -d build/mobile/.git ]]; then
 fi
 test "$(git -C build/mobile rev-parse HEAD)" = "$mobile_commit"
 python3 - <<'PY'
-import hashlib,pathlib,tarfile,urllib.request,zipfile
+import hashlib,pathlib,urllib.request,zipfile
 p=pathlib.Path('build/libffi-ios.zip')
 if not p.exists():
     p.write_bytes(urllib.request.urlopen('https://github.com/openjdk-mobile/ios-tools/releases/download/libffi-build/libffi-ios.zip').read())
@@ -33,24 +33,23 @@ with zipfile.ZipFile(p) as z:
     for name in z.namelist():
         if name.startswith('/') or '..' in pathlib.PurePosixPath(name).parts: raise ValueError('Invalid archive path')
     z.extractall('build/support')
-# Use native macOS tools to package the iOS bytecode, avoiding a cross-built host JDK.
-p=pathlib.Path('build/host-jdk-28.tar.gz')
-if not p.exists():
-    urllib.request.urlretrieve('https://github.com/adoptium/temurin28-binaries/releases/download/jdk-28%2B9-ea-beta/OpenJDK-jdk_aarch64_mac_hotspot_28_9-ea.tar.gz',p)
-with p.open('rb') as f:
-    assert hashlib.file_digest(f,'sha256').hexdigest()=='c4c7416891f86b56e7d831c300a0541f649d6a3267598aba8b82a6158cf7e35a'
-with tarfile.open(p) as archive:
-    archive.extractall('build/host-jdk',filter='data')
 PY
 sdk_root="$(xcrun --sdk iphoneos --show-sdk-path)"
 mac_sdk_root="$(xcrun --sdk macosx --show-sdk-path)"
 support_root="$project_root/build/support"
-host_jdk="$(find "$project_root/build/host-jdk" -type d -path '*/Contents/Home' -print -quit)"
+cd build/mobile
+# The packaging tools must use the same java.base build signature and iOS-aware
+# platform enum as the target. A vendor JDK of the same feature version is insufficient.
+version_options=( --with-version-opt=iphone-probe --with-vendor-name=OpenJDKMobileProbe )
+bash configure --with-conf-name=macos-aarch64-server-release --disable-warnings-as-errors \
+  --with-jvm-variants=server --with-sysroot="$mac_sdk_root" "${version_options[@]}"
+gmake CONF=macos-aarch64-server-release images
+host_jdk="$project_root/build/mobile/build/macos-aarch64-server-release/images/jdk"
 test -x "$host_jdk/bin/jmod" && test -x "$host_jdk/bin/jlink"
 "$host_jdk/bin/java" -version
-cd build/mobile
 bash configure --with-conf-name=ios-aarch64-zero-release --disable-warnings-as-errors \
   --openjdk-target=aarch64-macos-ios --with-jvm-variants=zero \
+  "${version_options[@]}" \
   --with-build-jdk="$host_jdk" \
   --with-sysroot="$sdk_root" --with-libffi-include="$support_root/include/ffi" \
   --with-libffi-lib="$support_root" --with-cups-include="$mac_sdk_root/usr/include"
@@ -60,7 +59,7 @@ gmake CONF=ios-aarch64-zero-release \
   java.management-static-libs jdk.management-static-libs \
   java.base-gendata java.base-copy \
   java.logging-java java.management-java java.naming-java java.security.sasl-java \
-  java.sql-java java.transaction.xa-java java.xml-java jdk.management-java jdk.unsupported-java
+  java.sql-java java.transaction.xa-java java.xml-java jdk.management-java jdk.unsupported-java jdk.zipfs-java
 cd "$project_root"
 device_root="$project_root/build/mobile/build/ios-aarch64-zero-release"
 export DEVICE_ROOT="$device_root" HOST_JDK="$host_jdk"
@@ -69,7 +68,7 @@ import json,os,pathlib,shutil,subprocess
 device=pathlib.Path(os.environ['DEVICE_ROOT'])
 host=pathlib.Path(os.environ['HOST_JDK'])
 modules=['java.base','java.logging','java.management','java.naming','java.security.sasl',
-         'java.sql','java.transaction.xa','java.xml','jdk.management','jdk.unsupported']
+         'java.sql','java.transaction.xa','java.xml','jdk.management','jdk.unsupported','jdk.zipfs']
 jmods=pathlib.Path('build/ios-jmods');jmods.mkdir(parents=True,exist_ok=True)
 for module in modules:
     classes=device/'jdk/modules'/module
@@ -97,7 +96,7 @@ image=pathlib.Path('build/runtime')
 release=(image/'release').read_text()
 module_line=next(x for x in release.splitlines() if x.startswith('MODULES='))
 modules=set(module_line.split('=',1)[1].strip('"').split())
-required={'java.base','java.logging','java.management','java.naming','java.sql','java.xml','jdk.management','jdk.unsupported'}
+required={'java.base','java.logging','java.management','java.naming','java.sql','java.xml','jdk.management','jdk.unsupported','jdk.zipfs'}
 missing=sorted(required-modules)
 pathlib.Path('build/module-check.json').write_text(json.dumps({'missing':missing,'modules':sorted(modules)},indent=2))
 if missing: raise SystemExit('iOS runtime is missing required modules: '+','.join(missing))
