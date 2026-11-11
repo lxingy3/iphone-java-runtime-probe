@@ -55,6 +55,15 @@ if before in s:
     p.write_text(s.replace(before,after))
 else:
     assert after in s, 'Unexpected upstream WX macro layout'
+p=Path('build/mobile/src/hotspot/share/runtime/thread.inline.hpp')
+s=p.read_text()
+before='#if defined(__APPLE__) && defined(AARCH64)'
+after='#ifdef MACOS_AARCH64'
+if before in s:
+    assert s.count(before)==1
+    p.write_text(s.replace(before,after))
+else:
+    assert after in s, 'Unexpected upstream thread WX guard'
 PY
 python3 - <<'PY'
 import hashlib,os,pathlib,urllib.request,zipfile
@@ -143,7 +152,7 @@ for filename in ['conf/security/java.security','lib/tzdb.dat','lib/modules']:
 for filename in ['LICENSE','ASSEMBLY_EXCEPTION']:
     shutil.copy2(pathlib.Path('build/mobile')/filename,image/filename)
 (image/'SOURCE.txt').write_text('OpenJDK Mobile source: https://github.com/openjdk/mobile/tree/c13417aa36f8f44755d0984b58aa735d0b41f233\n')
-(image/'LOCAL-PATCHES.txt').write_text('Guard MACOS_AARCH64 and MACOS_AARCH64_ONLY against ZERO to avoid references to unavailable JIT WX helpers.\nReproducible patch: https://github.com/lxingy3/iphone-java-runtime-probe/blob/main/scripts/build.sh\n')
+(image/'LOCAL-PATCHES.txt').write_text('Guard MACOS_AARCH64 and MACOS_AARCH64_ONLY against ZERO, and align thread.inline.hpp with the same guard, to avoid references to unavailable JIT WX helpers.\nReproducible patch: https://github.com/lxingy3/iphone-java-runtime-probe/blob/main/scripts/build.sh\n')
 PY
 libraries=( "$device_root/hotspot/variant-zero/libjvm/objs/static/libjvm.a" "$support_root/libffi.a" )
 for entry in java.base/java java.base/zip java.base/net java.base/nio java.base/jimage java.management/management jdk.management/management_ext; do
