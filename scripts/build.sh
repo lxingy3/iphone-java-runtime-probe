@@ -372,7 +372,7 @@ for fixture_path in "$fixture" "$project_root/build/ObserverFixtureWrong.app" "$
   codesign --force --sign - "$fixture_path"
 done
 python3 - <<'PY'
-import json,pathlib,re,shutil,subprocess,time
+import json,os,pathlib,re,shutil,subprocess,time
 output=pathlib.Path('build/simulator-results');output.mkdir(parents=True,exist_ok=True)
 def log(message):
     print(message,flush=True)
@@ -390,12 +390,14 @@ def command(*args,check=True,timeout=180):
             if value: log(value.decode(errors='replace') if isinstance(value,bytes) else value)
         raise
 inventory=json.loads(command('xcrun','simctl','list','devices','available','--json').stdout)
-devices=[d for runtime,items in inventory['devices'].items() if '.iOS-' in runtime for d in items if d['name'].startswith('iPhone')]
+devices=[dict(d,runtime=runtime) for runtime,items in inventory['devices'].items() if '.iOS-' in runtime for d in items if d['name'].startswith('iPhone')]
 if not devices: raise SystemExit('No available iPhone simulator runtime')
-duo=[d for d in devices if d['name']=='iPhone Duo']
-if not duo: raise SystemExit('Duo acceptance requires an available iPhone Duo simulator')
-device=duo[0];udid=device['udid']
-(output/'device.json').write_text(json.dumps({'name':device['name'],'environment':'simulator'},indent=2))
+profile=os.environ.get('PROBE_DEVICE_CLASS','duo')
+candidates=[d for d in devices if (d['name']!='iPhone Duo' if profile=='standard' else d['name']=='iPhone Duo')]
+if not candidates: raise SystemExit('No available iPhone simulator for profile '+profile)
+candidates.sort(key=lambda d:tuple(map(int,d['runtime'].split('.iOS-')[-1].split('-'))),reverse=True)
+device=candidates[0];udid=device['udid']
+(output/'device.json').write_text(json.dumps({'name':device['name'],'runtime':device['runtime'],'profile':profile,'environment':'simulator'},indent=2))
 command('xcrun','simctl','help',check=False)
 command('xcrun','simctl','io',udid,'help',check=False)
 container=None
@@ -408,6 +410,9 @@ try:
         bundle='local.astaps.ObserverFixture.Embedded' if variant=='ObserverFixtureEmbedded' else 'local.astaps.'+variant
         command('xcrun','simctl','install',udid,'build/'+variant+'.app')
         fixture_container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,bundle,'data').stdout.strip())
+        for old in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/host-status.json']:
+            stale=fixture_container/'Documents'/old
+            if stale.is_file(): stale.unlink()
         command('xcrun','simctl','launch','--terminate-running-process',udid,bundle,*arguments,timeout=60)
         fixture_report=fixture_container/'Documents/observer-fixture.json'
         for _ in range(30):
@@ -473,6 +478,8 @@ finally:
         result['visual_capture_error']=repr(failure)
         log('Screenshot unavailable: '+repr(failure))
 result['environment']='iOS Simulator, not a physical iPhone'
+result['simulator_device']=device['name']
+result['duo_device_tested']=device['name']=='iPhone Duo'
 result['observer_fixtures']=observer_results
 (output/'acceptance.json').write_text(json.dumps(result,indent=2))
 print(json.dumps(result,indent=2))
