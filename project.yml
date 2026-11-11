@@ -25,7 +25,7 @@ targets:
         ENABLE_DEBUG_DYLIB: NO
         CLANG_ENABLE_OBJC_ARC: YES
         DEAD_CODE_STRIPPING: NO
-        OTHER_LDFLAGS: '$(inherited) -Wl,-all_load -lc++ -lz'
+        OTHER_LDFLAGS: '$(inherited) -Wl,-all_load -Wl,-export_dynamic -lc++ -lz'
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
         MARKETING_VERSION: '0.3'

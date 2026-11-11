@@ -21,6 +21,8 @@ with JIT disabled and preserved the account through restart.
 Version 0.2 added a private-payload loader and Duo-aware UI. Simulator runs 13/15 passed all twelve checks, and physical size-transition reports retained one process and one JVM start across outer display, inner display, and landscape. Partial-fold angles and complete visual acceptance remain unverified.
 
 Version 0.3 moves first-install archive SHA-256 out of the Zero interpreter into iOS CommonCrypto, reports verification and extraction progress, and keeps the foreground test awake. A simulator benchmark compares native and Java hashing of the same 16 MiB file against a known digest. Performance improvement must be measured; full private-payload validation is a separate physical test.
+
+The physical 0.2 server test completed payload extraction and seed import, then failed with `VerifyError: Could not link verifier`. The archive was missing `VerifyClassForMajorVersion`. Version 0.3 links the matching pinned OpenJDK legacy verifier and adds checks for valid and invalid old-format bytecode; bytecode verification remains enabled. The 0.3 runtime suite therefore has fourteen checks.
 Full server execution on the phone, sustained memory usage, background survival, native game
 client integration, and folding transitions have not yet passed acceptance.
 
