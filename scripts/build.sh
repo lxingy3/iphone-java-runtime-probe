@@ -244,7 +244,7 @@ if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then
   git init "$verify_source"
   git -C "$verify_source" remote add origin https://github.com/openjdk/mobile.git
   git -C "$verify_source" fetch --depth 1 --filter=blob:none origin c13417aa36f8f44755d0984b58aa735d0b41f233
-  git -C "$verify_source" sparse-checkout set src/java.base/share/native/libverify src/java.base/share/native/libjava src/java.base/unix/native/libjava src/hotspot/share/include src/hotspot/os
+  git -C "$verify_source" sparse-checkout set src/java.base/share/native/libverify src/java.base/share/native/libjava src/java.base/unix/native/libjava src/java.base/share/classes/sun/nio/fs src/hotspot/share/include src/hotspot/os
   git -C "$verify_source" checkout --detach FETCH_HEAD
   framework_library="$(find build/OpenJDK.xcframework -name libOpenJDK.a -type f)"
   test -n "$framework_library"
@@ -262,6 +262,14 @@ if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then
   xcrun nm -gU "$framework_library" | grep ' T _VerifyClassForMajorVersion$'
   printf '%s\n' 'Link the pinned legacy bytecode verifier into the embedding app; retain bytecode verification.' >> build/runtime/LOCAL-PATCHES.txt
 fi
+runtime_source="$project_root/build/mobile"
+if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then runtime_source="$verify_source"; fi
+# The iOS BsdFileSystem uses this portable implementation, omitted from the old image.
+mkdir -p build/patch-source/sun/nio/fs build/java-base-patch
+cp "$runtime_source/src/java.base/share/classes/sun/nio/fs/PollingWatchService.java" build/patch-source/sun/nio/fs/
+javac --patch-module java.base=build/patch-source -d build/java-base-patch build/patch-source/sun/nio/fs/PollingWatchService.java
+jar --create --file build/RuntimePatch.jar -C build/java-base-patch .
+printf '%s\n' 'Restore the pinned portable PollingWatchService through a java.base patch JAR.' >> build/runtime/LOCAL-PATCHES.txt
 mkdir -p build/java
 javac --release 21 -encoding UTF-8 -d build/java Java/DeviceProbe.java
 jar --create --file build/DeviceProbe.jar -C build/java .
@@ -350,4 +358,4 @@ fi
 mkdir -p build/Payload
 cp -R build/DerivedData/Build/Products/Release-iphoneos/RuntimeProbe.app build/Payload/
 (cd build && zip -qr RuntimeProbe.ipa Payload)
-echo 'Unsigned 0.3 experimental IPA created. This revision requires physical-device validation.'
+echo 'Unsigned 0.4 experimental IPA created. This revision requires physical-device validation.'
