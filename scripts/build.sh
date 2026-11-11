@@ -371,13 +371,15 @@ try:
     if report.is_file(): result=json.loads(report.read_text())
     benchmark=container/'Documents/checksum-benchmark.json'
     result['checksum_benchmark']=json.loads(benchmark.read_text()) if benchmark.is_file() else {'passed':False,'error':'Missing checksum benchmark'}
-    result['passed']=result.get('passed') is True and result['checksum_benchmark'].get('passed') is True
+    parser_report=container/'Documents/background-parser-tests.json'
+    result['background_parser']=json.loads(parser_report.read_text()) if parser_report.is_file() else {'passed':False,'error':'Missing parser tests'}
+    result['passed']=result.get('passed') is True and result['checksum_benchmark'].get('passed') is True and result['background_parser'].get('passed') is True
 except Exception as failure:
     result={'passed':False,'error':repr(failure)}
 finally:
     if container:
         for source in (container/'Documents').glob('*'):
-            if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log','host-status.json','layout-history.json','checksum-benchmark.json','background-trial.json','lifecycle.jsonl'] or source.name.startswith('hs_err_pid')):
+            if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log','host-status.json','layout-history.json','checksum-benchmark.json','background-trial.json','background-registration.json','background-parser-tests.json','lifecycle.jsonl'] or source.name.startswith('hs_err_pid')):
                 shutil.copy2(source,output/source.name)
     try:
         command('xcrun','simctl','io',udid,'enumerate',check=False,timeout=30)
