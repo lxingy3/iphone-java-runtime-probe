@@ -1,6 +1,12 @@
 name: Build experimental iPhone runtime probe
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Build a device IPA or run simulator acceptance tests
+        type: choice
+        options: [device, simulator]
+        default: device
 permissions:
   contents: read
 jobs:
@@ -22,6 +28,8 @@ jobs:
           path: build/mobile/build/macos-aarch64-server-release/images/jdk
           key: mobile-c13417aa36f8f447-macos-arm64-host-zero-guard-v1
       - name: Build unsigned device probe
+        env:
+          PROBE_SDK: ${{ inputs.target == 'simulator' && 'iphonesimulator' || 'iphoneos' }}
         run: bash scripts/build.sh
       - name: Cache completed host tools
         if: always() && steps.host-tools.outputs.cache-hit != 'true' && hashFiles('build/mobile/build/macos-aarch64-server-release/images/jdk/bin/jlink') != ''
@@ -42,3 +50,4 @@ jobs:
             build/OpenJDK.xcframework
             build/runtime
             build/DeviceProbe.jar
+            build/simulator-results
