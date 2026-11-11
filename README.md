@@ -65,6 +65,17 @@ That restriction requires real game testing or server path migration before inte
 The kit contains no game executable and has not been integrated with an actual game client.
 Compiled symbols do not establish runtime coexistence, login, signing or gameplay compatibility.
 
+The optional `RuntimeHost.dylib` and `RuntimeClientProbe.dylib` package the same host
+and a local-only observation mode for a separately installed, explicitly configured client.
+The observer has no login redirect, trust bypass, signature bypass or key replacement.
+It records allowlisted URL hosts/paths and fingerprints of public keys, never credentials,
+request headers or bodies. It needs a matching `RuntimeIntegration.plist` bundle prefix,
+version and build. Merely loading the library does not start Java. An additional local
+`LocalServer/enable-server.txt` marker plus the private payload and checksum opt into the
+same-process server trial on the next app launch. That trial establishes cwd before
+UIApplicationMain, but compatibility with the host's earlier initializers is unverified.
+These libraries are experimental and do not make a client playable on a private server.
+
 ## Duo layout and lifecycle
 
 Build the app using Xcode 27.1 and the iOS 27.1 SDK or newer. The app uses a UIWindowScene,
