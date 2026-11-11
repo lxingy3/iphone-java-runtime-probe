@@ -24,9 +24,36 @@ Version 0.3 moves first-install archive SHA-256 out of the Zero interpreter into
 
 The physical 0.2 server test completed payload extraction and seed import, then failed with `VerifyError: Could not link verifier`. The archive was missing `VerifyClassForMajorVersion`. Version 0.3 links the matching pinned OpenJDK legacy verifier and adds checks for valid and invalid old-format bytecode; bytecode verification remains enabled. The 0.3 runtime suite therefore has fourteen checks.
 
-The physical 0.3 test passed the verifier stage and reached game-server initialization, then found a missing `PollingWatchService`. Version 0.4 restores that portable class from the same pinned OpenJDK source through a bundled `java.base` patch JAR. A fifteenth check registers a directory and verifies delivery of a real file creation event. Complete server startup and game play remain unverified.
-Full server execution on the phone, sustained memory usage, background survival, native game
-client integration, and folding transitions have not yet passed acceptance.
+The physical 0.3 test passed the verifier stage and reached game-server initialization, then found a missing `PollingWatchService`. Version 0.4 restores that portable class from the same pinned OpenJDK source through a bundled `java.base` patch JAR. A fifteenth check registers a directory and verifies delivery of a real file creation event.
+User-supplied physical 0.4 logs subsequently showed local HTTP and UDP server startup and an
+account persistence round-trip. HTTP access failed after two minutes with another app in
+the foreground, then recovered with the same server start time when this app returned.
+That is consistent with suspension, not proof of permanent background execution. A short
+two-app visible test remained responsive. Native game login and sustained gameplay remain unverified.
+
+## Version 0.5 experiments
+
+The background button submits one finite `BGContinuedProcessingTask` from a user action,
+using the immediate-failure strategy. It performs 120 actual HTTP/server-tick checks about
+five seconds apart, saves lifecycle and sample evidence, and ends on completion, cancellation,
+expiration, a changed server start time, a failed response, or a sampling gap above 15 seconds.
+Progress counts completed checks. No automatic renewal, silent audio, fake location work,
+or indefinite keep-alive is used. Finishing the diagnostic does not stop the JVM or promise
+future background availability. Native gameplay is a separate acceptance condition.
+
+The signed bundle ID MUST match the `BGTaskSchedulerPermittedIdentifiers` wildcard prefix.
+Re-signing tools that append a team suffix must rewrite that plist entry before signing.
+A mismatch disables the test with a visible explanation. Keep the existing bundle identity
+when updating an installed test app so its private Documents data can be retained.
+
+The build also produces `RuntimeHostKit/libRuntimeHostKit.a`, an Objective-C header and a
+host integration contract. It exports bootstrap, snapshot and scene-event entry points and
+omits `main` and app/scene delegates. It never changes an embedding host's cwd or redirects
+its native stdout. The present private payload still uses relative java.io paths: server mode
+fails closed unless the host already established the required cwd before engine startup.
+That restriction requires real game testing or server path migration before integration.
+The kit contains no game executable and has not been integrated with an actual game client.
+Compiled symbols do not establish runtime coexistence, login, signing or gameplay compatibility.
 
 ## Duo layout and lifecycle
 
@@ -84,5 +111,6 @@ the need to run the game and server together when the computer is off.
 - https://openjdk-mobile.github.io/ios/helloworld/
 - https://developer.apple.com/iphone-duo/prepare/
 - https://developer.apple.com/videos/play/tech-talks/111463/
+- https://developer.apple.com/documentation/backgroundtasks/performing-long-running-tasks-on-ios-and-ipados
 
 OpenJDK carries GPLv2 with the Classpath Exception. Preserve its license files with binaries.

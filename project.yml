@@ -19,6 +19,7 @@ targets:
       - framework: build/OpenJDK.xcframework
         embed: false
       - sdk: libz.tbd
+      - sdk: BackgroundTasks.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.astaps.RuntimeProbe
@@ -30,5 +31,5 @@ targets:
         OTHER_LDFLAGS: '$(inherited) -Wl,-all_load -Wl,-export_dynamic -lc++ -lz'
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
-        MARKETING_VERSION: '0.4'
-        CURRENT_PROJECT_VERSION: '4'
+        MARKETING_VERSION: '0.5'
+        CURRENT_PROJECT_VERSION: '5'
