@@ -64,6 +64,15 @@ if before in s:
     p.write_text(s.replace(before,after))
 else:
     assert after in s, 'Unexpected upstream thread WX guard'
+p=Path('build/mobile/src/hotspot/os_cpu/bsd_zero/os_bsd_zero.cpp')
+s=p.read_text()
+before='#if defined(AARCH64) && defined(__APPLE__)'
+after='#ifdef MACOS_AARCH64'
+if before in s:
+    assert s.count(before)==1
+    p.write_text(s.replace(before,after))
+else:
+    assert after in s, 'Unexpected upstream Zero OS WX guard'
 PY
 python3 - <<'PY'
 import hashlib,os,pathlib,urllib.request,zipfile
