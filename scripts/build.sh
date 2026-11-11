@@ -279,7 +279,7 @@ try:
     command('xcrun','simctl','install',udid,'build/DerivedData/Build/Products/Release-iphonesimulator/RuntimeProbe.app')
     container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,'local.astaps.RuntimeProbe','data').stdout.strip())
     try:
-        command('xcrun','simctl','launch','--terminate-running-process',udid,'local.astaps.RuntimeProbe','--probe-auto-run',timeout=60)
+        command('xcrun','simctl','launch','--terminate-running-process',udid,'local.astaps.RuntimeProbe','--probe-auto-run','--checksum-benchmark',timeout=60)
     except (subprocess.TimeoutExpired,subprocess.CalledProcessError):
         log('Launch did not return normally; collecting the installed app evidence anyway.')
     report=container/'Documents/runtime-probe.json'
@@ -287,12 +287,15 @@ try:
         if report.is_file(): break
         time.sleep(1)
     if report.is_file(): result=json.loads(report.read_text())
+    benchmark=container/'Documents/checksum-benchmark.json'
+    result['checksum_benchmark']=json.loads(benchmark.read_text()) if benchmark.is_file() else {'passed':False,'error':'Missing checksum benchmark'}
+    result['passed']=result.get('passed') is True and result['checksum_benchmark'].get('passed') is True
 except Exception as failure:
     result={'passed':False,'error':repr(failure)}
 finally:
     if container:
         for source in (container/'Documents').glob('*'):
-            if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log','host-status.json','layout-history.json'] or source.name.startswith('hs_err_pid')):
+            if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log','host-status.json','layout-history.json','checksum-benchmark.json'] or source.name.startswith('hs_err_pid')):
                 shutil.copy2(source,output/source.name)
     try:
         command('xcrun','simctl','io',udid,'enumerate',check=False,timeout=30)
@@ -322,4 +325,4 @@ fi
 mkdir -p build/Payload
 cp -R build/DerivedData/Build/Products/Release-iphoneos/RuntimeProbe.app build/Payload/
 (cd build && zip -qr RuntimeProbe.ipa Payload)
-echo 'Unsigned 0.2 experimental IPA created. This revision requires physical-device validation.'
+echo 'Unsigned 0.3 experimental IPA created. This revision requires physical-device validation.'
