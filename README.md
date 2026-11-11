@@ -41,10 +41,20 @@ Progress counts completed checks. No automatic renewal, silent audio, fake locat
 or indefinite keep-alive is used. Finishing the diagnostic does not stop the JVM or promise
 future background availability. Native gameplay is a separate acceptance condition.
 
-The signed bundle ID MUST match the `BGTaskSchedulerPermittedIdentifiers` wildcard prefix.
-Re-signing tools that append a team suffix must rewrite that plist entry before signing.
+The signed bundle ID MUST match the `BGTaskSchedulerPermittedIdentifiers` prefix.
+Re-signing tools that append a team suffix must rewrite that plist entry exactly once.
+iloader 2.4.1 performs this rewrite itself; do not pre-append its suffix to the input IPA.
 A mismatch disables the test with a visible explanation. Keep the existing bundle identity
 when updating an installed test app so its private Documents data can be retained.
+
+Version 0.5 registered the wildcard itself. A physical-device run returned false even
+after the installed plist and signed bundle prefix matched. Version 0.6 uses the same
+concrete `.servertrial.session` identifier in the plist, registration and submission,
+following Apple's static-identifier example. Registration timing remains at app launch.
+A separate run token isolates delayed callbacks from cancelled runs. The registration
+report now records the installed declarations, build and PID. This is a candidate fix:
+physical registration and real background samples must pass before claiming success.
+Reference: https://developer.apple.com/videos/play/wwdc2025/227/
 
 The build also produces `RuntimeHostKit/libRuntimeHostKit.a`, an Objective-C header and a
 host integration contract. It exports bootstrap, snapshot and scene-event entry points and
