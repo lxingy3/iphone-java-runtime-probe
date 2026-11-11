@@ -108,9 +108,11 @@ the app is compiled and linked with the new SDK, recorded in `toolchain.json`.
 
 Select `simulator` for the iPhone Duo simulator and automatic runtime checks.
 Results include a screenshot, runtime reports, window geometry, and command help.
-Two small UIKit fixtures also load the actual observation libraries. They check original
+Three small UIKit fixtures also load the actual observation libraries. They check original
 method and URL results, URL filtering, omission of input/query/key contents, and rejection
-of an unexpected host bundle. The fixtures contain no game code. Passing them does not
+of an unexpected host bundle. The third starts the Java probe through the dynamic host
+library in the same process and checks that a second JVM request is rejected.
+The fixtures contain no game code. Passing them does not
 verify library loading, signing, or SDK behavior inside a real game.
 Simulator results do not establish physical signing, folding transitions, memory limits,
 or game performance. Select `device` for an unsigned ARM64 `RuntimeProbe.ipa`.
