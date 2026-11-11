@@ -7,6 +7,11 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public final class DeviceProbe {
+    public static final class BeanProbe {
+        private String value;
+        public String getValue() { return value; }
+        public void setValue(String value) { this.value = value; }
+    }
     interface Test { void run() throws Exception; }
     static final Map<String,String> results = new LinkedHashMap<>();
     static void check(String name, Test test) {
@@ -18,8 +23,24 @@ public final class DeviceProbe {
         results.clear();
         check("required_modules", () -> {
             for (String name : new String[]{"java.lang.management.ManagementFactory", "javax.management.MBeanServer",
-                 "java.sql.SQLException", "javax.naming.Context", "javax.xml.parsers.DocumentBuilderFactory", "sun.misc.Unsafe"})
+                 "java.sql.SQLException", "javax.naming.Context", "javax.xml.parsers.DocumentBuilderFactory", "sun.misc.Unsafe",
+                 "java.beans.Transient", "java.rmi.Remote", "javax.script.ScriptEngineManager",
+                 "java.lang.instrument.Instrumentation", "org.ietf.jgss.GSSException"})
                 Class.forName(name);
+        });
+        check("javabeans_introspection", () -> {
+            BeanProbe bean = new BeanProbe();
+            var descriptor = Arrays.stream(java.beans.Introspector.getBeanInfo(BeanProbe.class).getPropertyDescriptors())
+                .filter(p -> p.getName().equals("value")).findFirst().orElseThrow();
+            descriptor.getWriteMethod().invoke(bean,"bean-ok");
+            if (!descriptor.getReadMethod().invoke(bean).equals("bean-ok")) throw new IOException("Bean accessor mismatch");
+        });
+        check("scheduled_executor", () -> {
+            var executor = Executors.newSingleThreadScheduledExecutor();
+            try {
+                if (!executor.schedule(() -> "timer-ok",25,TimeUnit.MILLISECONDS).get(5,TimeUnit.SECONDS).equals("timer-ok"))
+                    throw new IOException("Scheduled task mismatch");
+            } finally { executor.shutdownNow(); }
         });
         check("file_persistence", () -> {
             var file=Path.of("probe-storage.txt");
@@ -78,6 +99,7 @@ public final class DeviceProbe {
         boolean passed=results.values().stream().allMatch("PASS"::equals);
         StringBuilder json=new StringBuilder("{\n  \"passed\": ").append(passed)
             .append(",\n  \"vm\": ").append(quote(System.getProperty("java.vm.name")))
+            .append(",\n  \"java_version\": ").append(quote(System.getProperty("java.version")))
             .append(",\n  \"os\": ").append(quote(System.getProperty("os.name"))).append(",\n  \"checks\": {");
         String separator="";
         for(var entry:results.entrySet()){json.append(separator).append("\n    ").append(quote(entry.getKey())).append(": ").append(quote(entry.getValue()));separator=",";}
