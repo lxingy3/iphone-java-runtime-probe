@@ -27,6 +27,12 @@ The script now excludes those JIT-specific macros for Zero and matches the app m
 OS to the native libraries' iOS 18.5 SDK. This fix awaits a successful application build.
 Completed host tools are cached to avoid repeating their build during further experiments.
 
+Selecting the manual workflow's `simulator` target builds a separate ARM64 simulator
+library and launches the app with `--probe-auto-run`. JSON results, JVM output, and a
+screenshot are retained. A simulator pass still does not establish physical-device
+signing, memory limits, performance, or game compatibility. Locally the same test uses
+`PROBE_SDK=iphonesimulator bash scripts/build.sh` from a clean build directory.
+
 Run `bash scripts/build.sh` or use the included manually triggered GitHub Actions workflow.
 The workflow uses a standard macOS runner, has a 90-minute timeout, and has no scheduled runs.
 If successful, it produces an unsigned `RuntimeProbe.ipa`; signing and installation are a separate step.
