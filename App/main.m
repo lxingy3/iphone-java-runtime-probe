@@ -2,6 +2,9 @@
 // Simulator-only host for the optional observer. No game code or real account data.
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#include <unistd.h>
+extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
+extern NSDictionary *RPHostSnapshot(void);
 
 @interface MiHoYoRSAEncryptor : NSObject
 + (NSString *)encryptString:(NSString *)input publicKey:(NSString *)key;
@@ -71,6 +74,33 @@
             [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil]
                 writeToFile:[documents stringByAppendingPathComponent:@"observer-fixture.json"] atomically:YES];
             label.text = passed ? @"Observer fixture passed" : @"Observer fixture failed";
+            if (passed && [NSProcessInfo.processInfo.arguments containsObject:@"--probe-embedded-runtime"]) {
+                NSString *storage = [documents stringByAppendingPathComponent:@"EmbeddedRuntime"];
+                NSString *resources = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"LocalRuntime"];
+                NSError *error = nil;
+                BOOL accepted = RPHostStart(storage,resources,NO,&error);
+                NSDictionary *request = @{@"accepted":@(accepted),@"error":error.localizedDescription ?: @""};
+                [[NSJSONSerialization dataWithJSONObject:request options:0 error:nil]
+                    writeToFile:[documents stringByAppendingPathComponent:@"embedded-request.json"] atomically:YES];
+                if (accepted) [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) {
+                    NSDictionary *snapshot = RPHostSnapshot();
+                    NSString *phase = snapshot[@"phase"];
+                    if (![phase isEqual:@"probe_passed"] && ![phase isEqual:@"probe_failed"] && ![phase isEqual:@"failed"]) return;
+                    [timer invalidate];
+                    NSData *runtimeData = [NSData dataWithContentsOfFile:[storage stringByAppendingPathComponent:@"runtime-probe.json"]];
+                    NSDictionary *runtime = runtimeData ? [NSJSONSerialization JSONObjectWithData:runtimeData options:0 error:nil] : @{};
+                    NSError *repeatError = nil;
+                    BOOL repeatAccepted = RPHostStart(storage,resources,NO,&repeatError);
+                    BOOL runtimePassed = [runtime[@"passed"] boolValue] && [snapshot[@"jvm_start_count"] isEqual:@1] &&
+                        [snapshot[@"pid"] isEqual:@(getpid())] && !repeatAccepted && repeatError != nil;
+                    NSDictionary *embedded = @{@"passed":@(runtimePassed),@"runtime":runtime ?: @{},
+                        @"host":snapshot,@"same_process":@([snapshot[@"pid"] isEqual:@(getpid())]),
+                        @"second_jvm_rejected":@(!repeatAccepted && repeatError != nil),@"actual_game_tested":@NO};
+                    [[NSJSONSerialization dataWithJSONObject:embedded options:NSJSONWritingPrettyPrinted error:nil]
+                        writeToFile:[documents stringByAppendingPathComponent:@"embedded-fixture.json"] atomically:YES];
+                    label.text = runtimePassed ? @"Dynamic runtime fixture passed" : @"Dynamic runtime fixture failed";
+                }];
+            }
         });
     });
     return YES;
