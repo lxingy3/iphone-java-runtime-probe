@@ -23,8 +23,10 @@ The first experiment failed on ELF `-soname` flags from the generic iOS `images`
 The second compiled the native iOS libraries successfully, but a vendor JDK's `jlink`
 rejected the target build signature. The third generated the framework and module image,
 then app linkage exposed Apple/AArch64 WX macros incorrectly enabled for the Zero port.
-The script now excludes those JIT-specific macros for Zero and matches the app minimum
-OS to the native libraries' iOS 18.5 SDK. This fix awaits a successful application build.
+The fourth build identified a second, inconsistent guard in `thread.inline.hpp`.
+The script now excludes those JIT-specific macros for Zero and applies the same guard
+to the inline definitions. The app minimum OS matches the native libraries' iOS 18.5 SDK.
+These changes still await a successful application build and runtime test.
 Completed host tools are cached to avoid repeating their build during further experiments.
 
 Selecting the manual workflow's `simulator` target builds a separate ARM64 simulator
