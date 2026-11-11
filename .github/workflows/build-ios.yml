@@ -51,4 +51,6 @@ jobs:
             build/OpenJDK.xcframework
             build/runtime
             build/DeviceProbe.jar
+            build/RuntimePatch.jar
+            build/RuntimeHostKit
             build/simulator-results
