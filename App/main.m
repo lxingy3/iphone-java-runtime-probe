@@ -32,6 +32,22 @@ static void Lifecycle(NSString *event) {
     if (!file) { [NSData.data writeToFile:path atomically:YES]; file = [NSFileHandle fileHandleForWritingAtPath:path]; }
     [file seekToEndOfFile]; [file writeData:json]; [file writeData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]]; [file closeFile];
 }
+static BOOL ValidServiceSnapshot(id json, NSInteger status, NSString *previousStart, long long previousTick) {
+    if (status != 200 || ![json isKindOfClass:NSDictionary.class] || ![json[@"retcode"] isEqual:@0]) return NO;
+    id game = json[@"game"]; if (![game isKindOfClass:NSDictionary.class]) return NO;
+    id tick = game[@"tick"]; if (![tick isKindOfClass:NSDictionary.class]) return NO;
+    id start = game[@"startedAt"], count = tick[@"completedCount"];
+    if (![start isKindOfClass:NSString.class] || ![start length] || ![count isKindOfClass:NSNumber.class] || [count longLongValue] < 0) return NO;
+    return !previousStart || ([start isEqualToString:previousStart] && [count longLongValue] > previousTick);
+}
+static void CheckSnapshotParser(void) {
+    NSDictionary *valid = @{@"retcode":@0, @"game":@{@"startedAt":@"test-start",@"tick":@{@"completedCount":@2}}};
+    BOOL passed = ValidServiceSnapshot(valid,200,nil,-1) && ValidServiceSnapshot(valid,200,@"test-start",1) &&
+        !ValidServiceSnapshot(valid,200,@"different-start",1) && !ValidServiceSnapshot(valid,200,@"test-start",2) &&
+        !ValidServiceSnapshot(@[],200,nil,-1) && !ValidServiceSnapshot(valid,503,nil,-1) &&
+        !ValidServiceSnapshot(@{@"retcode":@0,@"game":@{}},200,nil,-1);
+    WriteJSON(@"background-parser-tests.json", @{@"passed":@(passed),@"cases":@7,@"system_background_execution_tested":@NO});
+}
 
 // A finite diagnostic job, not a permanent keep-alive. All state is main-queue owned.
 API_AVAILABLE(ios(26.0))
@@ -62,7 +78,14 @@ API_AVAILABLE(ios(26.0))
 + (instancetype)shared {
     static RPBackgroundTrial *value; static dispatch_once_t once;
     dispatch_once(&once, ^{ value = [RPBackgroundTrial new]; value.state = @"idle";
-        value.message = @"服务端就绪后，可开始一次 10 分钟的后台测试。"; });
+        value.message = @"服务端就绪后，可开始一次 10 分钟的后台测试。";
+        NSData *data = [NSData dataWithContentsOfFile:[Documents() stringByAppendingPathComponent:@"background-trial.json"]];
+        id previous = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        if ([previous isKindOfClass:NSDictionary.class] && [previous[@"message"] isKindOfClass:NSString.class]) {
+            BOOL unfinished = [@[@"running",@"submitting"] containsObject:previous[@"state"]];
+            value.message = unfinished ? @"上次测试未完成；旧记录已保留，可重新开始测试。" : [@"上次结果：" stringByAppendingString:previous[@"message"]];
+        }
+    });
     return value;
 }
 - (void)save {
@@ -80,7 +103,7 @@ API_AVAILABLE(ios(26.0))
     NSArray *permitted = [NSBundle.mainBundle objectForInfoDictionaryKey:@"BGTaskSchedulerPermittedIdentifiers"];
     if (![permitted containsObject:pattern]) {
         self.state = @"signing_configuration_mismatch";
-        self.message = @"安装包的后台标识未与签名匹配，需要修正安装包。"; [self save]; return;
+        self.message = @"安装包的后台标识未与签名匹配，需要修正安装包。"; [self saveRegistration]; return;
     }
     self.registered = [BGTaskScheduler.sharedScheduler registerForTaskWithIdentifier:pattern usingQueue:dispatch_get_main_queue() launchHandler:^(BGTask *task) {
         RPBackgroundTrial *trial = RPBackgroundTrial.shared;
@@ -99,11 +122,22 @@ API_AVAILABLE(ios(26.0))
         trial.timer = [NSTimer scheduledTimerWithTimeInterval:5 target:trial selector:@selector(sample) userInfo:nil repeats:YES];
     }];
     if (!self.registered) { self.state = @"registration_failed"; self.message = @"系统未能注册后台测试。"; }
-    [self save];
+    [self saveRegistration];
+}
+- (void)saveRegistration {
+    WriteJSON(@"background-registration.json", @{@"registered":@(self.registered), @"state":self.state,
+        @"bundle_id":NSBundle.mainBundle.bundleIdentifier ?: @"", @"message":self.message});
+    [NSNotificationCenter.defaultCenter postNotificationName:RuntimeChanged object:self];
 }
 - (void)submit {
     if (!self.registered || self.task || self.pending || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     self.identifier = [NSString stringWithFormat:@"%@.servertrial.%@", NSBundle.mainBundle.bundleIdentifier, NSUUID.UUID.UUIDString];
+    NSString *previous = [Documents() stringByAppendingPathComponent:@"background-trial.json"];
+    if ([NSFileManager.defaultManager fileExistsAtPath:previous]) {
+        NSString *history = [Documents() stringByAppendingPathComponent:@"background-history"];
+        [NSFileManager.defaultManager createDirectoryAtPath:history withIntermediateDirectories:YES attributes:nil error:nil];
+        [NSFileManager.defaultManager copyItemAtPath:previous toPath:[history stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".json"]] error:nil];
+    }
     self.samples = [NSMutableArray new]; self.successful = 0; self.backgroundSamples = 0;
     self.began = 0; self.previousSample = 0; self.previousTick = -1; self.serverStart = nil;
     self.pending = YES; self.state = @"submitting"; self.message = @"正在向系统申请本次测试…";
@@ -119,6 +153,7 @@ API_AVAILABLE(ios(26.0))
 }
 - (void)finish:(NSString *)state success:(BOOL)success message:(NSString *)message {
     if (!self.task && !self.pending) return;
+    if (self.pending) [BGTaskScheduler.sharedScheduler cancelTaskRequestWithIdentifier:self.identifier];
     [self.timer invalidate]; self.timer = nil;
     [self.request cancel]; self.request = nil;
     self.state = state; self.message = message; self.pending = NO;
@@ -150,8 +185,7 @@ API_AVAILABLE(ios(26.0))
             NSDictionary *tick = [game[@"tick"] isKindOfClass:NSDictionary.class] ? game[@"tick"] : nil;
             NSString *started = [game[@"startedAt"] isKindOfClass:NSString.class] ? game[@"startedAt"] : nil;
             NSNumber *completed = [tick[@"completedCount"] isKindOfClass:NSNumber.class] ? tick[@"completedCount"] : nil;
-            BOOL passed = !error && [(NSHTTPURLResponse *)response statusCode] == 200 && [json[@"retcode"] isEqual:@0] && started && completed;
-            if (passed && self.serverStart) passed = [started isEqualToString:self.serverStart] && completed.longLongValue > self.previousTick;
+            BOOL passed = !error && ValidServiceSnapshot(json,[(NSHTTPURLResponse *)response statusCode],self.serverStart,self.previousTick);
             if (passed) { self.serverStart = started; self.previousTick = completed.longLongValue; self.successful++; }
             if (background && passed) self.backgroundSamples++;
             [self.samples addObject:@{@"elapsed_seconds":@(now-self.began), @"gap_seconds":@(gap),
@@ -612,6 +646,7 @@ __attribute__((visibility("default"))) void RPHostSceneEvent(NSString *event) {
 @implementation AppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
     Lifecycle(@"application_launch");
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--probe-auto-run"]) CheckSnapshotParser();
     if (@available(iOS 26.0, *)) [RPBackgroundTrial.shared registerTask];
     return YES;
 }
