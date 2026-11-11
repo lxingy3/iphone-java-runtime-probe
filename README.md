@@ -13,12 +13,18 @@ Do not upload the parent experiment directory or the server-payload ZIP.
 
 ## Build
 
-Requirements: a Mac with Xcode's iPhoneOS SDK, JDK 27, GNU make, autoconf, XcodeGen,
+Requirements: an Apple Silicon Mac with Xcode's iPhoneOS SDK, JDK 27, GNU make, autoconf, XcodeGen,
 Python 3, Git, and network access to the pinned open-source dependencies.
+
+The script downloads a checksum-pinned macOS JDK 28 EA for module packaging. It builds
+the iOS Zero VM and three required native-library modules as static libraries, then
+packages ten Java modules with host `jmod`/`jlink`. The first experiment using the generic
+OpenJDK `images` target failed because that iOS target supplied ELF `-soname` flags to
+Apple's linker. The revised static-only route is awaiting a successful native build.
 
 Run `bash scripts/build.sh` or use the included manually triggered GitHub Actions workflow.
 The workflow uses a standard macOS runner, has a 90-minute timeout, and has no scheduled runs.
-It produces an unsigned `RuntimeProbe.ipa`; signing and installation are a separate step.
+If successful, it produces an unsigned `RuntimeProbe.ipa`; signing and installation are a separate step.
 No App Store, TestFlight, Apple developer subscription, or cloud game server is created.
 
 The first native build may reveal missing iOS APIs or static-library symbols. Such a build
