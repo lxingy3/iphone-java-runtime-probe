@@ -1,0 +1,8 @@
+build/
+vendor/
+*.ipa
+*.p12
+*.p8
+*.mobileprovision
+*.bson.json
+seed*

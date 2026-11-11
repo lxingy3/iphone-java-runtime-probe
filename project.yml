@@ -1,0 +1,32 @@
+name: RuntimeProbe
+options:
+  bundleIdPrefix: local.astaps
+targets:
+  RuntimeProbe:
+    type: application
+    platform: iOS
+    deploymentTarget: '17.0'
+    sources:
+      - path: App
+      - path: build/runtime
+        type: folder
+        buildPhase: resources
+      - path: build/DeviceProbe.jar
+        buildPhase: resources
+    dependencies:
+      - framework: build/OpenJDK.xcframework
+        embed: false
+      - sdk: libz.tbd
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.astaps.RuntimeProbe
+        INFOPLIST_FILE: App/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_DEBUG_DYLIB: NO
+        CLANG_ENABLE_OBJC_ARC: YES
+        DEAD_CODE_STRIPPING: NO
+        OTHER_LDFLAGS: '$(inherited) -Wl,-all_load -lc++ -lz'
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        MARKETING_VERSION: '0.1'
+        CURRENT_PROJECT_VERSION: '1'
