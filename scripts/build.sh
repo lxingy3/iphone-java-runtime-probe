@@ -74,6 +74,20 @@ if before in s:
     p.write_text(s.replace(before,after))
 else:
     assert after in s, 'Unexpected upstream Zero OS WX guard'
+p=Path('build/mobile/src/hotspot/os/bsd/os_bsd.cpp')
+s=p.read_text()
+before='#endif\n    Arguments::set_java_home(buf);'
+after='''#endif
+#ifdef __IOS__
+    // JNI embedding initializes the bootstrap path before parsing -D options.
+    const char* ios_java_home = ::getenv("JAVA_HOME");
+    Arguments::set_java_home((ios_java_home != nullptr && *ios_java_home) ? ios_java_home : buf);
+#else
+    Arguments::set_java_home(buf);
+#endif'''
+if after not in s:
+    assert s.count(before)==1, 'Unexpected upstream Java home initialization'
+    p.write_text(s.replace(before,after))
 PY
 python3 - <<'PY'
 import hashlib,os,pathlib,urllib.request,zipfile
@@ -166,7 +180,7 @@ for filename in ['conf/security/java.security','lib/tzdb.dat','lib/modules']:
 for filename in ['LICENSE','ASSEMBLY_EXCEPTION']:
     shutil.copy2(pathlib.Path('build/mobile')/filename,image/filename)
 (image/'SOURCE.txt').write_text('OpenJDK Mobile source: https://github.com/openjdk/mobile/tree/c13417aa36f8f44755d0984b58aa735d0b41f233\n')
-(image/'LOCAL-PATCHES.txt').write_text('Guard MACOS_AARCH64 and MACOS_AARCH64_ONLY against ZERO, and align thread.inline.hpp with the same guard, to avoid references to unavailable JIT WX helpers.\nReproducible patch: https://github.com/lxingy3/iphone-java-runtime-probe/blob/main/scripts/build.sh\n')
+(image/'LOCAL-PATCHES.txt').write_text('Exclude JIT WX helpers consistently for Zero. On iOS, honor the embedding app JAVA_HOME before bootstrap path initialization.\nReproducible patches: https://github.com/lxingy3/iphone-java-runtime-probe/blob/main/scripts/build.sh\n')
 PY
 libraries=( "$device_root/hotspot/variant-zero/libjvm/objs/static/libjvm.a" "$support_root/libffi.a" )
 for entry in java.base/java java.base/zip java.base/net java.base/nio java.base/jimage java.management/management jdk.management/management_ext; do
