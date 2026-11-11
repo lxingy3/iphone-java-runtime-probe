@@ -13,7 +13,8 @@ cd "$project_root"
 mkdir -p build
 exec > >(tee build/build.log) 2>&1
 sdk_name="${PROBE_SDK:-iphoneos}"
-extra_target_flags=()
+# macOS ships Bash 3.2, whose nounset handling rejects empty array expansion.
+extra_target_flags=( --disable-warnings-as-errors )
 case "$sdk_name" in
   iphoneos)
     target_conf=ios-aarch64-zero-release
@@ -22,7 +23,7 @@ case "$sdk_name" in
   iphonesimulator)
     target_conf=iossim-aarch64-zero-release
     build_destination='generic/platform=iOS Simulator'
-    extra_target_flags=( '--with-extra-cflags=-target arm64-apple-ios-simulator -mios-simulator-version-min=18.5' '--with-extra-cxxflags=-target arm64-apple-ios-simulator -mios-simulator-version-min=18.5' )
+    extra_target_flags+=( '--with-extra-cflags=-target arm64-apple-ios-simulator -mios-simulator-version-min=18.5' '--with-extra-cxxflags=-target arm64-apple-ios-simulator -mios-simulator-version-min=18.5' )
     ;;
   *) echo "Unsupported test SDK: $sdk_name" >&2; exit 2 ;;
 esac
@@ -103,7 +104,7 @@ gmake CONF=macos-aarch64-server-release images
 fi
 test -x "$host_jdk/bin/jmod" && test -x "$host_jdk/bin/jlink"
 "$host_jdk/bin/java" -version
-bash configure --with-conf-name="$target_conf" --disable-warnings-as-errors \
+bash configure --with-conf-name="$target_conf" \
   --openjdk-target=aarch64-macos-ios --with-jvm-variants=zero \
   "${version_options[@]}" "${extra_target_flags[@]}" \
   --with-build-jdk="$host_jdk" \
@@ -115,7 +116,9 @@ gmake CONF="$target_conf" \
   java.management-static-libs jdk.management-static-libs \
   java.base-gendata java.base-copy \
   java.logging-java java.management-java java.naming-java java.security.sasl-java \
-  java.sql-java java.transaction.xa-java java.xml-java jdk.management-java jdk.unsupported-java jdk.zipfs-java
+  java.sql-java java.transaction.xa-java java.xml-java jdk.management-java jdk.unsupported-java jdk.zipfs-java \
+  java.desktop-java java.datatransfer-java java.prefs-java java.scripting-java java.rmi-java \
+  java.instrument-java java.security.jgss-java
 cd "$project_root"
 device_root="$project_root/build/mobile/build/$target_conf"
 export DEVICE_ROOT="$device_root" HOST_JDK="$host_jdk"
@@ -124,7 +127,8 @@ import json,os,pathlib,shutil,subprocess
 device=pathlib.Path(os.environ['DEVICE_ROOT'])
 host=pathlib.Path(os.environ['HOST_JDK'])
 modules=['java.base','java.logging','java.management','java.naming','java.security.sasl',
-         'java.sql','java.transaction.xa','java.xml','jdk.management','jdk.unsupported','jdk.zipfs']
+         'java.sql','java.transaction.xa','java.xml','jdk.management','jdk.unsupported','jdk.zipfs',
+         'java.desktop','java.datatransfer','java.prefs','java.scripting','java.rmi','java.instrument','java.security.jgss']
 jmods=pathlib.Path('build/ios-jmods');jmods.mkdir(parents=True,exist_ok=True)
 for module in modules:
     classes=device/'jdk/modules'/module
@@ -152,7 +156,8 @@ image=pathlib.Path('build/runtime')
 release=(image/'release').read_text()
 module_line=next(x for x in release.splitlines() if x.startswith('MODULES='))
 modules=set(module_line.split('=',1)[1].strip('"').split())
-required={'java.base','java.logging','java.management','java.naming','java.sql','java.xml','jdk.management','jdk.unsupported','jdk.zipfs'}
+required={'java.base','java.logging','java.management','java.naming','java.sql','java.xml','jdk.management','jdk.unsupported','jdk.zipfs',
+          'java.desktop','java.datatransfer','java.prefs','java.scripting','java.rmi','java.instrument','java.security.jgss'}
 missing=sorted(required-modules)
 pathlib.Path('build/module-check.json').write_text(json.dumps({'missing':missing,'modules':sorted(modules)},indent=2))
 if missing: raise SystemExit('iOS runtime is missing required modules: '+','.join(missing))
