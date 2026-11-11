@@ -3,6 +3,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #include <unistd.h>
+#include <dlfcn.h>
 extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
 extern NSDictionary *RPHostSnapshot(void);
 
@@ -76,6 +77,10 @@ extern NSDictionary *RPHostSnapshot(void);
                 writeToFile:[documents stringByAppendingPathComponent:@"observer-fixture.json"] atomically:YES];
             label.text = passed ? @"Observer fixture passed" : @"Observer fixture failed";
             if (passed && [NSProcessInfo.processInfo.arguments containsObject:@"--probe-embedded-runtime"]) {
+                // The host-local shim must not change the containing app's loader.
+                void *mainHandle = dlopen(NULL, RTLD_FIRST);
+                BOOL mainScopeUnchanged = mainHandle && dlsym(mainHandle,"JNI_OnLoad_java") == NULL;
+                if (mainHandle) dlclose(mainHandle);
                 NSString *storage = [documents stringByAppendingPathComponent:@"EmbeddedRuntime"];
                 NSString *resources = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"LocalRuntime"];
                 NSError *error = nil;
@@ -92,11 +97,12 @@ extern NSDictionary *RPHostSnapshot(void);
                     NSDictionary *runtime = runtimeData ? [NSJSONSerialization JSONObjectWithData:runtimeData options:0 error:nil] : @{};
                     NSError *repeatError = nil;
                     BOOL repeatAccepted = RPHostStart(storage,resources,NO,&repeatError);
-                    BOOL runtimePassed = [runtime[@"passed"] boolValue] && [snapshot[@"jvm_start_count"] isEqual:@1] &&
+                    BOOL runtimePassed = mainScopeUnchanged && [runtime[@"passed"] boolValue] && [snapshot[@"jvm_start_count"] isEqual:@1] &&
                         [snapshot[@"pid"] isEqual:@(getpid())] && !repeatAccepted && repeatError != nil;
                     NSDictionary *embedded = @{@"passed":@(runtimePassed),@"runtime":runtime ?: @{},
                         @"host":snapshot,@"same_process":@([snapshot[@"pid"] isEqual:@(getpid())]),
-                        @"second_jvm_rejected":@(!repeatAccepted && repeatError != nil),@"actual_game_tested":@NO};
+                        @"second_jvm_rejected":@(!repeatAccepted && repeatError != nil),
+                        @"containing_app_loader_scope_unchanged":@(mainScopeUnchanged),@"actual_game_tested":@NO};
                     [[NSJSONSerialization dataWithJSONObject:embedded options:NSJSONWritingPrettyPrinted error:nil]
                         writeToFile:[documents stringByAppendingPathComponent:@"embedded-fixture.json"] atomically:YES];
                     label.text = runtimePassed ? @"Dynamic runtime fixture passed" : @"Dynamic runtime fixture failed";
@@ -287,6 +293,29 @@ __attribute__((constructor)) static void RPCInitialize(void) {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
+
+#ifdef RP_EMBEDDED_LIBRARY
+// The pinned STATIC_BUILD JVM calls dlopen(NULL, RTLD_FIRST) for its native
+// libraries. In a dylib host that incorrectly searches the main executable.
+// Bind ONLY this image's static references to a hidden wrapper. Other images
+// still bind libSystem's dlopen; no dyld interposition or global symbol override.
+__attribute__((visibility("hidden")))
+void *RPEmbeddedDlopen(const char *path, int mode) __asm__("_dlopen");
+void *RPEmbeddedDlopen(const char *path, int mode) {
+    typedef void *(*Loader)(const char *, int);
+    static Loader systemLoader;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ systemLoader = (Loader)dlsym(RTLD_DEFAULT,"dlopen"); });
+    if (!systemLoader) return NULL;
+    if (path == NULL && (mode & RTLD_FIRST)) {
+        Dl_info image = {0};
+        if (!dladdr((const void *)&JNI_CreateJavaVM,&image) || !image.dli_fname) return NULL;
+        return systemLoader(image.dli_fname,mode | RTLD_NOLOAD);
+    }
+    return systemLoader(path,mode);
+}
+#endif
 
 static NSString * const RuntimeChanged = @"RuntimeChanged";
 static NSString *RPHostDocuments;
@@ -691,6 +720,18 @@ static BOOL ChecksumBenchmark(JNIEnv *env, jclass cls) {
                 }
                 [self updatePhase:@"starting_runtime" status:@"校验完成，正在启动运行环境…"];
             }
+#ifdef RP_EMBEDDED_LIBRARY
+            void *nativeHandle = RPEmbeddedDlopen(NULL,RTLD_FIRST);
+            NSMutableDictionary *lookupChecks = [NSMutableDictionary new];
+            BOOL lookupPassed = nativeHandle != NULL;
+            for (NSString *symbol in @[@"Java_java_lang_Class_registerNatives",@"Java_java_lang_System_registerNatives",@"JNI_OnLoad_java",@"VerifyClassForMajorVersion"]) {
+                BOOL found = nativeHandle && dlsym(nativeHandle,symbol.UTF8String) != NULL;
+                lookupChecks[symbol] = @(found); lookupPassed &= found;
+            }
+            if (nativeHandle) dlclose(nativeHandle);
+            WriteJSON(@"native-lookup.json",@{@"passed":@(lookupPassed),@"checks":lookupChecks});
+            if (!lookupPassed) { [self updatePhase:@"failed" status:@"内嵌运行环境缺少原生函数"]; return; }
+#endif
             fprintf(stderr, "Runtime: starting JNI_CreateJavaVM, mode=%s\n", server ? "server" : "probe");
             NSArray<NSString *> *arguments = @[
                 [@"-Djava.home=" stringByAppendingString:runtimeHome],
