@@ -5,7 +5,7 @@ targets:
   RuntimeProbe:
     type: application
     platform: iOS
-    deploymentTarget: '17.0'
+    deploymentTarget: '18.5'
     sources:
       - path: App
       - path: build/runtime

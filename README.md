@@ -21,7 +21,11 @@ pinned OpenJDK Mobile source. It builds three native-library modules as static l
 then packages eleven Java modules, including `jdk.zipfs` for server JAR resources.
 The first experiment failed on ELF `-soname` flags from the generic iOS `images` target.
 The second compiled the native iOS libraries successfully, but a vendor JDK's `jlink`
-rejected the target build signature. The current same-source toolchain awaits validation.
+rejected the target build signature. The third generated the framework and module image,
+then app linkage exposed Apple/AArch64 WX macros incorrectly enabled for the Zero port.
+The script now excludes those JIT-specific macros for Zero and matches the app minimum
+OS to the native libraries' iOS 18.5 SDK. This fix awaits a successful application build.
+Completed host tools are cached to avoid repeating their build during further experiments.
 
 Run `bash scripts/build.sh` or use the included manually triggered GitHub Actions workflow.
 The workflow uses a standard macOS runner, has a 90-minute timeout, and has no scheduled runs.
