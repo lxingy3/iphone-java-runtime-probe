@@ -27,6 +27,25 @@ public final class DeviceProbe {
         else run();
     }
     public static void prepareServer(String documents) throws Exception {
+        prepareServer(documents, null);
+    }
+    public static String sha256File(String filename) throws Exception {
+        MessageDigest hash = MessageDigest.getInstance("SHA-256");
+        byte[] buffer = new byte[1024 * 1024];
+        try (InputStream input = Files.newInputStream(Path.of(filename))) {
+            for (int count; (count = input.read(buffer)) != -1;) hash.update(buffer, 0, count);
+        }
+        return HexFormat.of().formatHex(hash.digest());
+    }
+    private static void extractionProgress(Path source, int completed, int total, long bytes) throws IOException {
+        Path temporary = source.resolve("payload-progress.tmp");
+        Files.writeString(temporary, "{\"completed_files\":" + completed + ",\"total_files\":" + total +
+            ",\"extracted_bytes\":" + bytes + "}", StandardCharsets.UTF_8);
+        Files.move(temporary, source.resolve("payload-progress.json"), StandardCopyOption.REPLACE_EXISTING);
+    }
+    // The native host passes a digest computed from this file during this launch,
+    // not a persisted assertion that a file may be trusted without verification.
+    public static void prepareServer(String documents, String nativeDigest) throws Exception {
         Path source = Path.of(documents).toAbsolutePath().normalize();
         Path archive = source.resolve("server-payload.zip");
         Path root = source.resolve("server");
@@ -42,13 +61,15 @@ public final class DeviceProbe {
         }
         if (Files.exists(root.resolve("iphone-save.mv")) || Files.exists(root.resolve("iphone-save.mv.mv.db")) || Files.exists(root.resolve("seed-imported.marker")))
             throw new IOException("Existing saved data has no payload marker; manual review required");
-        MessageDigest hash = MessageDigest.getInstance("SHA-256");
         byte[] buffer = new byte[1024 * 1024];
         System.err.println("Payload: verifying archive checksum");
-        try (InputStream input = Files.newInputStream(archive)) {
-            for (int count; (count = input.read(buffer)) != -1;) hash.update(buffer, 0, count);
-        }
-        if (!HexFormat.of().formatHex(hash.digest()).equals(expected)) throw new IOException("Payload checksum mismatch");
+        String actual = nativeDigest == null ? sha256File(archive.toString()) : nativeDigest;
+        if (!actual.equals(expected)) throw new IOException("Payload checksum mismatch");
+        System.err.println("Payload: checksum verified using " + (nativeDigest == null ? "Java" : "native SHA-256"));
+        int totalEntries;
+        try (var index = new java.util.zip.ZipFile(archive.toFile())) { totalEntries = index.size(); }
+        if (totalEntries > 100000) throw new IOException("Payload has too many entries");
+        extractionProgress(source, 0, totalEntries, 0);
         Files.createDirectories(root);
         final long limit = 8L * 1024 * 1024 * 1024;
         long total = 0;
@@ -73,12 +94,14 @@ public final class DeviceProbe {
                         }
                     }
                 }
+                if (entries % 1000 == 0) extractionProgress(source, entries, totalEntries, total);
                 if (entries % 5000 == 0) System.err.println("Payload: " + entries + " entries, " + total + " bytes");
                 zip.closeEntry();
             }
         }
         requireServerFiles(root);
         Files.writeString(marker, expected + "\n", StandardCharsets.UTF_8);
+        extractionProgress(source, entries, totalEntries, total);
         System.err.println("Payload: prepared " + entries + " entries, " + total + " bytes");
     }
     private static void requireServerFiles(Path root) throws IOException {
