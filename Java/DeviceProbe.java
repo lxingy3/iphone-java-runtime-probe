@@ -15,8 +15,10 @@ public final class DeviceProbe {
     interface Test { void run() throws Exception; }
     static final Map<String,String> results = new LinkedHashMap<>();
     static void check(String name, Test test) {
+        System.err.println("Probe: starting " + name);
         try { test.run(); results.put(name,"PASS"); }
         catch (Throwable failure) { results.put(name,"FAIL: " + failure); }
+        System.err.println("Probe: " + name + " " + results.get(name));
     }
     public static void main(String[] args) throws Exception { run(); }
     public static void run() throws Exception {
