@@ -1,3 +1,162 @@
+#if defined(RP_CLIENT_OBSERVER_ONLY)
+// Optional local-only instrumentation for an explicitly configured, separately
+// installed host. It does not redirect traffic or change cryptographic results.
+#import <UIKit/UIKit.h>
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+#include <CommonCrypto/CommonDigest.h>
+#include <unistd.h>
+
+extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
+extern NSDictionary *RPHostSnapshot(void);
+extern void RPHostSceneEvent(NSString *);
+
+static NSString *RPCReportDirectory;
+static NSString *RPCServerDirectory;
+static NSDictionary *RPCConfiguration;
+static dispatch_queue_t RPCReportQueue;
+static NSMutableArray *RPCEvents;
+static NSMutableSet *RPCSeen;
+static BOOL RPCPreparedServer;
+static BOOL RPCHostStarted;
+static __thread BOOL RPCRecordingURL;
+static IMP RPCOriginalURL;
+static IMP RPCOriginalRSAString;
+static IMP RPCOriginalRSAData;
+
+static void RPCWrite(NSString *name, NSDictionary *value) {
+    NSData *json = [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingPrettyPrinted error:nil];
+    [json writeToFile:[RPCReportDirectory stringByAppendingPathComponent:name] options:NSDataWritingAtomic error:nil];
+}
+static void RPCRecord(NSString *event, NSDictionary *details) {
+    if (!RPCReportQueue) return;
+    dispatch_async(RPCReportQueue, ^{
+        if (RPCEvents.count >= 512) return;
+        NSString *identity = [event stringByAppendingString:details.description];
+        if ([RPCSeen containsObject:identity]) return;
+        [RPCSeen addObject:identity];
+        NSMutableDictionary *item = [details mutableCopy];
+        item[@"event"] = event; item[@"time"] = @([NSDate.date timeIntervalSince1970]);
+        [RPCEvents addObject:item];
+        RPCWrite(@"client-observations.json", @{@"schema":@1,@"pid":@(getpid()),@"events":RPCEvents,
+            @"request_bodies_recorded":@NO,@"credentials_recorded":@NO,@"traffic_redirected":@NO,
+            @"native_game_login_verified":@NO});
+    });
+}
+static void RPCObserveURL(NSURL *url) {
+    if (RPCRecordingURL || ![url isKindOfClass:NSURL.class]) return;
+    RPCRecordingURL = YES;
+    @try {
+        NSString *host = url.host.lowercaseString ?: @"";
+        NSString *path = url.path ?: @"";
+        // Exact paths only: never persist arbitrary URLs, query strings, headers or bodies.
+        NSArray *paths = @[@"/query_region_list",@"/query_cur_region",@"/query_cur_region/dispatch",
+            @"/hk4e_cn/mdk/shield/api/login",@"/hk4e_cn/mdk/shield/api/verify",
+            @"/hk4e_cn/combo/granter/login/v2/login",@"/hk4e_cn/combo/granter/api/getConfig",
+            @"/hk4e_cn/mdk/shield/api/loadConfig",@"/hk4e_global/mdk/shield/api/login",
+            @"/hk4e_global/mdk/shield/api/verify",@"/hk4e_global/combo/granter/login/v2/login",
+            @"/hk4e_global/combo/granter/api/getConfig",@"/hk4e_global/mdk/shield/api/loadConfig"];
+        BOOL vendor = [host isEqualToString:@"mihoyo.com"] || [host hasSuffix:@".mihoyo.com"] ||
+            [host isEqualToString:@"hoyoverse.com"] || [host hasSuffix:@".hoyoverse.com"];
+        if (vendor && [paths containsObject:path]) RPCRecord(@"url_constructed", @{@"host":host,@"path":path});
+    } @finally { RPCRecordingURL = NO; }
+}
+static id RPCURL(id receiver, SEL selector, id value) {
+    id result = ((id (*)(id,SEL,id))RPCOriginalURL)(receiver,selector,value);
+    RPCObserveURL(result); return result;
+}
+static void RPCObserveKey(NSString *method, id key) {
+    if (![key isKindOfClass:NSString.class]) return;
+    NSData *bytes = [key dataUsingEncoding:NSUTF8StringEncoding];
+    if (bytes.length > 16384) return;
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(bytes.bytes,(CC_LONG)bytes.length,digest);
+    NSMutableString *hex = [NSMutableString new];
+    for (NSUInteger i=0;i<sizeof(digest);i++) [hex appendFormat:@"%02x",digest[i]];
+    RPCRecord(@"sdk_public_key_used", @{@"method":method,@"key_sha256":hex,@"key_bytes":@(bytes.length)});
+}
+static id RPCRSAString(id receiver, SEL selector, id input, id key) {
+    RPCObserveKey(@"encryptString:publicKey:",key);
+    return ((id (*)(id,SEL,id,id))RPCOriginalRSAString)(receiver,selector,input,key);
+}
+static id RPCRSAData(id receiver, SEL selector, id input, id key) {
+    RPCObserveKey(@"encryptData:publicKey:",key);
+    return ((id (*)(id,SEL,id,id))RPCOriginalRSAData)(receiver,selector,input,key);
+}
+static BOOL RPCObserveClassMethod(Class target, SEL selector, IMP replacement, NSUInteger arguments, IMP *original) {
+    Method method = target ? class_getClassMethod(target,selector) : NULL;
+    if (!method) return NO;
+    NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+    if (signature.numberOfArguments != arguments || signature.methodReturnType[0] != '@') return NO;
+    for (NSUInteger i=2;i<arguments;i++) if ([signature getArgumentTypeAtIndex:i][0] != '@') return NO;
+    *original = method_getImplementation(method);
+    method_setImplementation(method,replacement);
+    return YES;
+}
+static void RPCLaunched(void) {
+    RPCRecord(@"application_launched", @{@"version":[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"",
+        @"server_enabled":@(RPCPreparedServer)});
+    if (!RPCPreparedServer) return;
+    NSError *error = nil;
+    NSString *resources = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"LocalRuntime"];
+    RPCHostStarted = RPHostStart(RPCServerDirectory,resources,YES,&error);
+    RPCRecord(@"host_bootstrap", @{@"accepted":@(RPCHostStarted),@"error":error.localizedDescription ?: @""});
+    if (RPCHostStarted) [NSTimer scheduledTimerWithTimeInterval:5 repeats:YES block:^(NSTimer *timer) {
+        NSDictionary *snapshot = RPHostSnapshot();
+        dispatch_async(RPCReportQueue, ^{ RPCWrite(@"embedded-host.json",snapshot); });
+    }];
+}
+__attribute__((constructor)) static void RPCInitialize(void) {
+    @autoreleasepool {
+        RPCConfiguration = [NSDictionary dictionaryWithContentsOfFile:
+            [NSBundle.mainBundle pathForResource:@"RuntimeIntegration" ofType:@"plist"]];
+        NSString *bundle = NSBundle.mainBundle.bundleIdentifier;
+        NSString *expected = RPCConfiguration[@"BundlePrefix"];
+        if (![expected isKindOfClass:NSString.class] || ![expected hasPrefix:@"local.astaps."] ||
+            !([bundle isEqualToString:expected] || [bundle hasPrefix:[expected stringByAppendingString:@"."]])) return;
+        if (![[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] isEqual:RPCConfiguration[@"ClientVersion"]] ||
+            ![[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] isEqual:RPCConfiguration[@"ClientBuild"]]) return;
+        NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+        RPCReportDirectory = [documents stringByAppendingPathComponent:@"RuntimeIntegration"];
+        [NSFileManager.defaultManager createDirectoryAtPath:RPCReportDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+        RPCReportQueue = dispatch_queue_create("local.runtime.integration.reports",DISPATCH_QUEUE_SERIAL);
+        RPCEvents = [NSMutableArray new]; RPCSeen = [NSMutableSet new];
+        RPCRecord(@"library_loaded", @{@"bundle_id":bundle,@"mode":@"observe",@"tls_validation_changed":@NO});
+        RPCObserveClassMethod(NSURL.class,@selector(URLWithString:),(IMP)RPCURL,3,&RPCOriginalURL);
+        Class crypto = NSClassFromString(@"MiHoYoRSAEncryptor");
+        RPCObserveClassMethod(crypto,NSSelectorFromString(@"encryptString:publicKey:"),(IMP)RPCRSAString,4,&RPCOriginalRSAString);
+        RPCObserveClassMethod(crypto,NSSelectorFromString(@"encryptData:publicKey:"),(IMP)RPCRSAData,4,&RPCOriginalRSAData);
+        RPCRecord(@"observers_registered", @{@"url":@(RPCOriginalURL != NULL),
+            @"sdk_string":@(RPCOriginalRSAString != NULL),@"sdk_data":@(RPCOriginalRSAData != NULL)});
+        RPCServerDirectory = [documents stringByAppendingPathComponent:@"LocalServer"];
+        // Optional same-process trial: enabled only by an explicit local marker and
+        // already supplied private payload. Set cwd during loader initialization,
+        // before UIApplicationMain; coexistence with the host engine is still a test.
+        NSString *marker = [RPCServerDirectory stringByAppendingPathComponent:@"enable-server.txt"];
+        NSString *payload = [RPCServerDirectory stringByAppendingPathComponent:@"server-payload.zip"];
+        NSString *checksum = [RPCServerDirectory stringByAppendingPathComponent:@"server-payload.sha256"];
+        if ([NSFileManager.defaultManager fileExistsAtPath:marker] &&
+            [NSFileManager.defaultManager fileExistsAtPath:payload] &&
+            [NSFileManager.defaultManager fileExistsAtPath:checksum]) {
+            NSString *working = [RPCServerDirectory stringByAppendingPathComponent:@"server"];
+            [NSFileManager.defaultManager createDirectoryAtPath:working withIntermediateDirectories:YES attributes:nil error:nil];
+            RPCPreparedServer = chdir(working.fileSystemRepresentation) == 0;
+            RPCRecord(@"prelaunch_server_directory", @{@"prepared":@(RPCPreparedServer)});
+        }
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil
+            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) {
+                dispatch_async(dispatch_get_main_queue(), ^{ RPCLaunched(); });
+            }];
+        for (NSString *name in @[UIApplicationDidEnterBackgroundNotification,UIApplicationWillEnterForegroundNotification]) {
+            [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification *notification) {
+                    RPCRecord(@"lifecycle", @{@"name":notification.name});
+                    if (RPCHostStarted) RPHostSceneEvent(notification.name);
+                }];
+        }
+    }
+}
+#else
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <BackgroundTasks/BackgroundTasks.h>
@@ -673,3 +832,4 @@ int main(int argc, char *argv[]) {
     @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(AppDelegate.class)); }
 }
 #endif
+#endif // RP_CLIENT_OBSERVER_ONLY
