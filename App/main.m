@@ -1,4 +1,83 @@
-#if defined(RP_CLIENT_OBSERVER_ONLY)
+#if defined(RP_CLIENT_FIXTURE)
+// Simulator-only host for the optional observer. No game code or real account data.
+#import <UIKit/UIKit.h>
+#import <Foundation/Foundation.h>
+
+@interface MiHoYoRSAEncryptor : NSObject
++ (NSString *)encryptString:(NSString *)input publicKey:(NSString *)key;
++ (NSData *)encryptData:(NSData *)input publicKey:(NSString *)key;
+@end
+@implementation MiHoYoRSAEncryptor
++ (NSString *)encryptString:(NSString *)input publicKey:(NSString *)key { return [@"original:" stringByAppendingString:input]; }
++ (NSData *)encryptData:(NSData *)input publicKey:(NSString *)key { return [input copy]; }
+@end
+@interface RPCFixtureDelegate : UIResponder <UIApplicationDelegate>
+@property(nonatomic,strong) UIWindow *window;
+@end
+@implementation RPCFixtureDelegate
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
+    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    UIViewController *controller = [UIViewController new];
+    controller.view.backgroundColor = UIColor.systemBackgroundColor;
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(24,100,330,160)];
+    label.numberOfLines = 0; label.text = @"Local observer acceptance fixture";
+    [controller.view addSubview:label]; self.window.rootViewController = controller;
+    [self.window makeKeyAndVisible];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(), ^{
+        BOOL disabled = [NSProcessInfo.processInfo.arguments containsObject:@"--expect-observer-disabled"];
+        NSString *sensitive = @"FIXTURE_INPUT_NEVER_RECORD";
+        NSString *key = @"FIXTURE_PUBLIC_KEY_HASH_ONLY";
+        NSData *input = [sensitive dataUsingEncoding:NSUTF8StringEncoding];
+        NSString *encrypted = [MiHoYoRSAEncryptor encryptString:sensitive publicKey:key];
+        NSData *encryptedData = [MiHoYoRSAEncryptor encryptData:input publicKey:key];
+        NSURL *login = [NSURL URLWithString:[@"https://hk4e-sdk.mihoyo.com/hk4e_cn/mdk/shield/api/login?token=" stringByAppendingString:sensitive]];
+        NSURL *dispatch = [NSURL URLWithString:@"https://dispatchcnglobal.yuanshen.com/query_region_list?version=fixture"];
+        [NSURL URLWithString:@"https://untrusted.example/query_region_list?token=fixture"];
+        [NSURL URLWithString:@"https://hk4e-sdk.mihoyo.com/private-account-path"];
+        NSMutableDictionary *checks = [@{@"string_passthrough":@([encrypted isEqualToString:[@"original:" stringByAppendingString:sensitive]]),
+            @"data_passthrough":@([encryptedData isEqualToData:input]),
+            @"url_query_preserved":@([login.query containsString:sensitive]),
+            @"dispatch_url_preserved":@([dispatch.host isEqualToString:@"dispatchcnglobal.yuanshen.com"])} mutableCopy];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(), ^{
+            NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+            NSString *path = [documents stringByAppendingPathComponent:@"RuntimeIntegration/client-observations.json"];
+            NSData *data = [NSData dataWithContentsOfFile:path];
+            NSDictionary *report = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+            NSString *raw = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"";
+            if (disabled) {
+                checks[@"unexpected_bundle_observer_disabled"] = @(data == nil);
+            } else {
+                NSMutableArray *urls = [NSMutableArray new];
+                NSUInteger keys = 0; BOOL loaded = NO, launched = NO, registered = NO;
+                for (NSDictionary *event in report[@"events"]) {
+                    if ([event[@"event"] isEqual:@"library_loaded"]) loaded = YES;
+                    if ([event[@"event"] isEqual:@"application_launched"]) launched = ![event[@"server_enabled"] boolValue];
+                    if ([event[@"event"] isEqual:@"observers_registered"]) registered = [event[@"url"] boolValue] && [event[@"sdk_string"] boolValue] && [event[@"sdk_data"] boolValue];
+                    if ([event[@"event"] isEqual:@"url_constructed"]) [urls addObject:event];
+                    if ([event[@"event"] isEqual:@"sdk_public_key_used"] && [event[@"key_sha256"] length] == 64) keys++;
+                }
+                checks[@"dynamic_library_loaded"] = @(loaded);
+                checks[@"launch_observed_without_server_start"] = @(launched);
+                checks[@"objc_observers_registered"] = @(registered);
+                checks[@"allowed_urls_only"] = @(urls.count == 2 && [urls[0][@"path"] isEqual:@"/hk4e_cn/mdk/shield/api/login"] && [urls[1][@"path"] isEqual:@"/query_region_list"]);
+                checks[@"public_key_fingerprints_only"] = @(keys == 2 && ![raw containsString:key]);
+                checks[@"no_sensitive_input_or_query"] = @(![raw containsString:sensitive] && ![raw containsString:@"token="] && ![raw containsString:@"version=fixture"]);
+                checks[@"no_disallowed_hosts_or_paths"] = @(![raw containsString:@"untrusted.example"] && ![raw containsString:@"private-account-path"]);
+                checks[@"no_embedded_server_started"] = @(![NSFileManager.defaultManager fileExistsAtPath:[documents stringByAppendingPathComponent:@"RuntimeIntegration/embedded-host.json"]]);
+            }
+            BOOL passed = YES; for (NSNumber *value in checks.allValues) passed &= value.boolValue;
+            NSDictionary *result = @{@"passed":@(passed),@"checks":checks,@"environment":@"iOS Simulator fixture",
+                @"actual_game_tested":@NO,@"native_private_gameplay_verified":@NO};
+            [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil]
+                writeToFile:[documents stringByAppendingPathComponent:@"observer-fixture.json"] atomically:YES];
+            label.text = passed ? @"Observer fixture passed" : @"Observer fixture failed";
+        });
+    });
+    return YES;
+}
+@end
+int main(int argc,char **argv) { @autoreleasepool { return UIApplicationMain(argc,argv,nil,NSStringFromClass(RPCFixtureDelegate.class)); } }
+#elif defined(RP_CLIENT_OBSERVER_ONLY)
 // Optional local-only instrumentation for an explicitly configured, separately
 // installed host. It does not redirect traffic or change cryptographic results.
 #import <UIKit/UIKit.h>
@@ -57,7 +136,8 @@ static void RPCObserveURL(NSURL *url) {
             @"/hk4e_global/mdk/shield/api/verify",@"/hk4e_global/combo/granter/login/v2/login",
             @"/hk4e_global/combo/granter/api/getConfig",@"/hk4e_global/mdk/shield/api/loadConfig"];
         BOOL vendor = [host isEqualToString:@"mihoyo.com"] || [host hasSuffix:@".mihoyo.com"] ||
-            [host isEqualToString:@"hoyoverse.com"] || [host hasSuffix:@".hoyoverse.com"];
+            [host isEqualToString:@"hoyoverse.com"] || [host hasSuffix:@".hoyoverse.com"] ||
+            [host isEqualToString:@"yuanshen.com"] || [host hasSuffix:@".yuanshen.com"];
         if (vendor && [paths containsObject:path]) RPCRecord(@"url_constructed", @{@"host":host,@"path":path});
     } @finally { RPCRecordingURL = NO; }
 }
@@ -832,4 +912,4 @@ int main(int argc, char *argv[]) {
     @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(AppDelegate.class)); }
 }
 #endif
-#endif // RP_CLIENT_OBSERVER_ONLY
+#endif // RP_CLIENT_FIXTURE / RP_CLIENT_OBSERVER_ONLY
