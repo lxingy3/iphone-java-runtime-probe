@@ -20,7 +20,99 @@ public final class DeviceProbe {
         catch (Throwable failure) { results.put(name,"FAIL: " + failure); }
         System.err.println("Probe: " + name + " " + results.get(name));
     }
-    public static void main(String[] args) throws Exception { run(); }
+    private static URLClassLoader serverLoader;
+    public static void main(String[] args) throws Exception {
+        if (args.length == 2 && args[0].equals("--prepare")) prepareServer(args[1]);
+        else if (args.length == 2 && args[0].equals("--server")) { prepareServer(args[1]); startServer(); }
+        else run();
+    }
+    public static void prepareServer(String documents) throws Exception {
+        Path source = Path.of(documents).toAbsolutePath().normalize();
+        Path archive = source.resolve("server-payload.zip");
+        Path root = source.resolve("server");
+        String expected = Files.readString(source.resolve("server-payload.sha256")).trim().toLowerCase(Locale.ROOT);
+        if (!expected.matches("[0-9a-f]{64}")) throw new IOException("Invalid payload checksum file");
+        Path marker = root.resolve(".payload-ready.sha256");
+        if (Files.isRegularFile(marker)) {
+            if (!Files.readString(marker).trim().equals(expected))
+                throw new IOException("An existing server uses a different payload; refusing to overwrite saved data");
+            requireServerFiles(root);
+            System.err.println("Payload: reusing prepared files and persistent database");
+            return;
+        }
+        if (Files.exists(root.resolve("iphone-save.mv")) || Files.exists(root.resolve("iphone-save.mv.mv.db")) || Files.exists(root.resolve("seed-imported.marker")))
+            throw new IOException("Existing saved data has no payload marker; manual review required");
+        MessageDigest hash = MessageDigest.getInstance("SHA-256");
+        byte[] buffer = new byte[1024 * 1024];
+        System.err.println("Payload: verifying archive checksum");
+        try (InputStream input = Files.newInputStream(archive)) {
+            for (int count; (count = input.read(buffer)) != -1;) hash.update(buffer, 0, count);
+        }
+        if (!HexFormat.of().formatHex(hash.digest()).equals(expected)) throw new IOException("Payload checksum mismatch");
+        Files.createDirectories(root);
+        final long limit = 8L * 1024 * 1024 * 1024;
+        long total = 0;
+        int entries = 0;
+        System.err.println("Payload: extracting local archive");
+        try (var zip = new java.util.zip.ZipInputStream(new BufferedInputStream(Files.newInputStream(archive), buffer.length))) {
+            for (java.util.zip.ZipEntry entry; (entry = zip.getNextEntry()) != null;) {
+                if (++entries > 100000) throw new IOException("Payload has too many entries");
+                String name = entry.getName();
+                Path target = root.resolve(name).normalize();
+                if (name.isEmpty() || name.contains("\\") || name.contains(":") || name.startsWith("/") ||
+                    !target.startsWith(root) || target.equals(root) || target.equals(marker))
+                    throw new IOException("Invalid payload entry path");
+                if (entry.isDirectory()) Files.createDirectories(target);
+                else {
+                    Files.createDirectories(target.getParent());
+                    try (OutputStream output = new BufferedOutputStream(Files.newOutputStream(target), buffer.length)) {
+                        for (int count; (count = zip.read(buffer)) != -1;) {
+                            total += count;
+                            if (total > limit) throw new IOException("Payload exceeds extraction limit");
+                            output.write(buffer, 0, count);
+                        }
+                    }
+                }
+                if (entries % 5000 == 0) System.err.println("Payload: " + entries + " entries, " + total + " bytes");
+                zip.closeEntry();
+            }
+        }
+        requireServerFiles(root);
+        Files.writeString(marker, expected + "\n", StandardCharsets.UTF_8);
+        System.err.println("Payload: prepared " + entries + " entries, " + total + " bytes");
+    }
+    private static void requireServerFiles(Path root) throws IOException {
+        for (String file : new String[]{"portable-launcher.jar", "grasscutter.jar", "config.json", "prototype-logback.xml"})
+            if (!Files.isRegularFile(root.resolve(file))) throw new IOException("Required server file missing: " + file);
+        if (!Files.isDirectory(root.resolve("lib")) || !Files.isDirectory(root.resolve("resources")))
+            throw new IOException("Required server directories are missing");
+    }
+    public static void startServer() throws Exception {
+        if (serverLoader != null) throw new IllegalStateException("Server already started in this process");
+        Path root = Path.of("").toAbsolutePath();
+        requireServerFiles(root);
+        List<Path> jars = new ArrayList<>();
+        jars.add(root.resolve("portable-launcher.jar"));
+        try (var dependencies = Files.list(root.resolve("lib"))) {
+            jars.addAll(dependencies.filter(p -> p.getFileName().toString().endsWith(".jar")).sorted().toList());
+        }
+        jars.add(root.resolve("grasscutter.jar"));
+        URL[] urls = new URL[jars.size()];
+        for (int i = 0; i < jars.size(); i++) urls[i] = jars.get(i).toUri().toURL();
+        serverLoader = new URLClassLoader(urls, DeviceProbe.class.getClassLoader());
+        Thread.currentThread().setContextClassLoader(serverLoader);
+        System.setProperty("java.class.path", String.join(File.pathSeparator, jars.stream().map(Path::toString).toList()));
+        System.err.println("Server: loading embedded launcher with " + jars.size() + " JARs");
+        try {
+            Class.forName("local.iphone.StartupProbe", true, serverLoader)
+                .getMethod("main", String[].class).invoke(null, (Object)new String[0]);
+        } catch (java.lang.reflect.InvocationTargetException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof Exception exception) throw exception;
+            if (cause instanceof Error error) throw error;
+            throw failure;
+        }
+    }
     public static void run() throws Exception {
         results.clear();
         check("required_modules", () -> {
