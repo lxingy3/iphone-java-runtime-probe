@@ -35,6 +35,11 @@
       [self.runButton.heightAnchor constraintEqualToConstant:50]
     ]];
 }
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.runButton.enabled && [NSProcessInfo.processInfo.arguments containsObject:@"--probe-auto-run"])
+        [self runProbe];
+}
 - (void)runProbe {
     self.runButton.enabled = NO; // A process can initialize this JVM only once.
     self.output.text = @"正在测试本机运行环境…";
