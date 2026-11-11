@@ -12,6 +12,21 @@ project_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$project_root"
 mkdir -p build
 exec > >(tee build/build.log) 2>&1
+sdk_name="${PROBE_SDK:-iphoneos}"
+extra_target_flags=()
+case "$sdk_name" in
+  iphoneos)
+    target_conf=ios-aarch64-zero-release
+    build_destination='generic/platform=iOS'
+    ;;
+  iphonesimulator)
+    target_conf=iossim-aarch64-zero-release
+    build_destination='generic/platform=iOS Simulator'
+    extra_target_flags=( '--with-extra-cflags=-target arm64-apple-ios-simulator -mios-simulator-version-min=18.5' '--with-extra-cxxflags=-target arm64-apple-ios-simulator -mios-simulator-version-min=18.5' )
+    ;;
+  *) echo "Unsupported test SDK: $sdk_name" >&2; exit 2 ;;
+esac
+export PROBE_SDK="$sdk_name"
 for command_name in xcodebuild xcrun xcodegen git python3 javac jar gmake autoconf; do
   command -v "$command_name" >/dev/null || { echo "Missing build tool: $command_name"; exit 2; }
 done
@@ -42,17 +57,20 @@ else:
     assert after in s, 'Unexpected upstream WX macro layout'
 PY
 python3 - <<'PY'
-import hashlib,pathlib,urllib.request,zipfile
-p=pathlib.Path('build/libffi-ios.zip')
+import hashlib,os,pathlib,urllib.request,zipfile
+simulator=os.environ['PROBE_SDK']=='iphonesimulator'
+filename='libffi-ios-sim.zip' if simulator else 'libffi-ios.zip'
+checksum='701b522e3eff0263f18d4a9e487f0a7ac30050fb2af20e86b6849daa14f5781f' if simulator else '4f39fd1d53fbd69d1bdbd915413077d130daa3f6792d1b3a03a690a9cbd4dea3'
+p=pathlib.Path('build')/filename
 if not p.exists():
-    p.write_bytes(urllib.request.urlopen('https://github.com/openjdk-mobile/ios-tools/releases/download/libffi-build/libffi-ios.zip').read())
-assert hashlib.sha256(p.read_bytes()).hexdigest()=='4f39fd1d53fbd69d1bdbd915413077d130daa3f6792d1b3a03a690a9cbd4dea3'
+    p.write_bytes(urllib.request.urlopen('https://github.com/openjdk-mobile/ios-tools/releases/download/libffi-build/'+filename).read())
+assert hashlib.sha256(p.read_bytes()).hexdigest()==checksum
 with zipfile.ZipFile(p) as z:
     for name in z.namelist():
         if name.startswith('/') or '..' in pathlib.PurePosixPath(name).parts: raise ValueError('Invalid archive path')
     z.extractall('build/support')
 PY
-sdk_root="$(xcrun --sdk iphoneos --show-sdk-path)"
+sdk_root="$(xcrun --sdk "$sdk_name" --show-sdk-path)"
 mac_sdk_root="$(xcrun --sdk macosx --show-sdk-path)"
 support_root="$project_root/build/support"
 cd build/mobile
@@ -67,21 +85,21 @@ gmake CONF=macos-aarch64-server-release images
 fi
 test -x "$host_jdk/bin/jmod" && test -x "$host_jdk/bin/jlink"
 "$host_jdk/bin/java" -version
-bash configure --with-conf-name=ios-aarch64-zero-release --disable-warnings-as-errors \
+bash configure --with-conf-name="$target_conf" --disable-warnings-as-errors \
   --openjdk-target=aarch64-macos-ios --with-jvm-variants=zero \
-  "${version_options[@]}" \
+  "${version_options[@]}" "${extra_target_flags[@]}" \
   --with-build-jdk="$host_jdk" \
   --with-sysroot="$sdk_root" --with-libffi-include="$support_root/include/ffi" \
   --with-libffi-lib="$support_root" --with-cups-include="$mac_sdk_root/usr/include"
 # iOS static libraries avoid the unsupported ELF shared-library image target.
-gmake CONF=ios-aarch64-zero-release \
+gmake CONF="$target_conf" \
   hotspot-zero-static-libs java.base-static-libs \
   java.management-static-libs jdk.management-static-libs \
   java.base-gendata java.base-copy \
   java.logging-java java.management-java java.naming-java java.security.sasl-java \
   java.sql-java java.transaction.xa-java java.xml-java jdk.management-java jdk.unsupported-java jdk.zipfs-java
 cd "$project_root"
-device_root="$project_root/build/mobile/build/ios-aarch64-zero-release"
+device_root="$project_root/build/mobile/build/$target_conf"
 export DEVICE_ROOT="$device_root" HOST_JDK="$host_jdk"
 python3 - <<'PY'
 import json,os,pathlib,shutil,subprocess
@@ -136,8 +154,8 @@ for entry in java.base/java java.base/zip java.base/net java.base/nio java.base/
 done
 libtool -static -o build/libOpenJDK.a "${libraries[@]}"
 mkdir -p build/include
-cp build/mobile/build/ios-aarch64-zero-release/jdk/include/*.h build/include/
-cp build/mobile/build/ios-aarch64-zero-release/jdk/include/ios/*.h build/include/
+cp "$device_root"/jdk/include/*.h build/include/
+cp "$device_root"/jdk/include/ios/*.h build/include/
 if [[ -e build/OpenJDK.xcframework ]]; then
   echo 'Framework already exists; use a clean checkout to rebuild.' >&2; exit 3
 fi
@@ -147,7 +165,38 @@ javac --release 21 -encoding UTF-8 -d build/java Java/DeviceProbe.java
 jar --create --file build/DeviceProbe.jar -C build/java .
 xcodegen generate --spec project.yml
 xcodebuild -project RuntimeProbe.xcodeproj -scheme RuntimeProbe -configuration Release \
-  -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+  -destination "$build_destination" -derivedDataPath build/DerivedData ARCHS=arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+if [[ "$sdk_name" == iphonesimulator ]]; then
+python3 - <<'PY'
+import json,pathlib,shutil,subprocess,time
+output=pathlib.Path('build/simulator-results');output.mkdir(parents=True,exist_ok=True)
+def command(*args,check=True,timeout=180):
+    return subprocess.run(args,check=check,capture_output=True,text=True,timeout=timeout)
+inventory=json.loads(command('xcrun','simctl','list','devices','available','--json').stdout)
+devices=[d for runtime,items in inventory['devices'].items() if '.iOS-' in runtime for d in items if d['name'].startswith('iPhone')]
+if not devices: raise SystemExit('No available iPhone simulator runtime')
+device=next((d for d in devices if d['state']=='Booted'),devices[0]);udid=device['udid']
+if device['state']!='Booted': command('xcrun','simctl','boot',udid)
+command('xcrun','simctl','bootstatus',udid,'-b',timeout=240)
+command('xcrun','simctl','install',udid,'build/DerivedData/Build/Products/Release-iphonesimulator/RuntimeProbe.app')
+command('xcrun','simctl','launch','--terminate-running-process',udid,'local.astaps.RuntimeProbe','--probe-auto-run')
+container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,'local.astaps.RuntimeProbe','data').stdout.strip())
+report=container/'Documents/runtime-probe.json'
+for _ in range(120):
+    if report.is_file(): break
+    time.sleep(1)
+for name in ['runtime-probe.json','jvm-output.log']:
+    source=container/'Documents'/name
+    if source.is_file(): shutil.copy2(source,output/name)
+command('xcrun','simctl','io',udid,'screenshot',str(output/'screen.png'),check=False)
+result=json.loads(report.read_text()) if report.is_file() else {'passed':False,'error':'No report before timeout'}
+result['environment']='iOS Simulator, not a physical iPhone'
+(output/'acceptance.json').write_text(json.dumps(result,indent=2))
+print(json.dumps(result,indent=2))
+if not result['passed']: raise SystemExit('Simulator runtime probe failed; inspect retained results')
+PY
+exit 0
+fi
 mkdir -p build/Payload
 cp -R build/DerivedData/Build/Products/Release-iphoneos/RuntimeProbe.app build/Payload/
 (cd build && zip -qr RuntimeProbe.ipa Payload)
