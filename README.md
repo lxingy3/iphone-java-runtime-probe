@@ -32,8 +32,10 @@ to the inline and OS definitions. The app minimum OS matches the native librarie
 The corrected guards built the eleven-module simulator app successfully. Its real
 startup failed with `Failed setting boot class path`: JNI initializes that path before
 parsing `-Djava.home`. The current script makes iOS initialization honor the app's
-explicit `JAVA_HOME`. This correction and the eighteen-module runtime still require
-a successful native test.
+explicit `JAVA_HOME`. The next eighteen-module simulator test passed that stage but
+failed to reserve its CodeCache. The iOS Zero cache contains entry descriptors pointing
+to precompiled C++ functions, so the current patch reserves it without executable
+permission. This correction still requires a successful native test.
 The device script also avoids empty-array expansion under macOS Bash 3.2.
 Host tools and the platform-specific native build tree are cached to shorten further experiments.
 
