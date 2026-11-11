@@ -245,7 +245,7 @@ xcodebuild -project RuntimeProbe.xcodeproj -scheme RuntimeProbe -configuration R
   -destination "$build_destination" -derivedDataPath build/DerivedData ARCHS=arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 if [[ "$sdk_name" == iphonesimulator ]]; then
 python3 - <<'PY'
-import json,pathlib,shutil,subprocess,time
+import json,pathlib,re,shutil,subprocess,time
 output=pathlib.Path('build/simulator-results');output.mkdir(parents=True,exist_ok=True)
 def log(message):
     print(message,flush=True)
@@ -294,8 +294,24 @@ finally:
         for source in (container/'Documents').glob('*'):
             if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log','host-status.json','layout-history.json'] or source.name.startswith('hs_err_pid')):
                 shutil.copy2(source,output/source.name)
-    try: command('xcrun','simctl','io',udid,'screenshot',str(output/'screen.png'),check=False,timeout=30)
-    except Exception as failure: log('Screenshot unavailable: '+repr(failure))
+    try:
+        command('xcrun','simctl','io',udid,'enumerate',check=False,timeout=30)
+        shot=command('xcrun','simctl','io',udid,'screenshot',str(output/'screen.png'),check=False,timeout=30)
+        displays=re.findall(r'--display=(\S+)\s+([^\n]+?)\s+(\d+)x(\d+)',shot.stderr or '')
+        captures=[]
+        if shot.returncode==0: captures.append('screen.png')
+        for identifier,name,width,height in displays:
+            if not identifier.isdigit(): continue
+            filename='screen-display-'+identifier+'.png'
+            capture=command('xcrun','simctl','io',udid,'screenshot','--display='+identifier,str(output/filename),check=False,timeout=30)
+            if capture.returncode==0: captures.append(filename)
+        result['screenshots']=captures
+        result['display_inventory']=[{'id':i,'name':n,'pixels':[int(w),int(h)]} for i,n,w,h in displays]
+        result['fold_transitions_verified']=False
+        if not captures: result['visual_capture_error']='No display screenshot was captured'
+    except Exception as failure:
+        result['visual_capture_error']=repr(failure)
+        log('Screenshot unavailable: '+repr(failure))
 result['environment']='iOS Simulator, not a physical iPhone'
 (output/'acceptance.json').write_text(json.dumps(result,indent=2))
 print(json.dumps(result,indent=2))
