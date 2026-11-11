@@ -57,6 +57,7 @@ API_AVAILABLE(ios(26.0))
 @property(nonatomic,strong) NSTimer *timer;
 @property(nonatomic,strong) NSMutableArray *samples;
 @property(nonatomic,copy) NSString *identifier;
+@property(nonatomic,copy) NSString *runIdentifier;
 @property(nonatomic,copy) NSString *state;
 @property(nonatomic,copy) NSString *message;
 @property(nonatomic,copy) NSString *serverStart;
@@ -89,8 +90,9 @@ API_AVAILABLE(ios(26.0))
     return value;
 }
 - (void)save {
-    NSMutableDictionary *report = [@{@"schema":@1, @"state":self.state, @"message":self.message,
+    NSMutableDictionary *report = [@{@"schema":@2, @"state":self.state, @"message":self.message,
         @"identifier":self.identifier ?: @"", @"pid":@(getpid()), @"target_samples":@120,
+        @"run_id":self.runIdentifier ?: @"",
         @"successful_samples":@(self.successful), @"background_samples":@(self.backgroundSamples),
         @"elapsed_seconds":@(self.began ? NSProcessInfo.processInfo.systemUptime-self.began : 0),
         @"samples":self.samples ?: @[], @"native_game_login_verified":@NO} mutableCopy];
@@ -99,22 +101,27 @@ API_AVAILABLE(ios(26.0))
 }
 - (void)registerTask {
     NSAssert(NSThread.isMainThread, @"Register on main queue during launch");
-    NSString *pattern = [NSBundle.mainBundle.bundleIdentifier stringByAppendingString:@".servertrial.*"];
+    if (self.registered) return;
+    // Register and submit the same concrete identifier. A wildcard is a declaration,
+    // not the identity of the task launched by the system.
+    self.identifier = [NSBundle.mainBundle.bundleIdentifier stringByAppendingString:@".servertrial.session"];
     NSArray *permitted = [NSBundle.mainBundle objectForInfoDictionaryKey:@"BGTaskSchedulerPermittedIdentifiers"];
-    if (![permitted containsObject:pattern]) {
+    if (![permitted containsObject:self.identifier]) {
         self.state = @"signing_configuration_mismatch";
         self.message = @"安装包的后台标识未与签名匹配，需要修正安装包。"; [self saveRegistration]; return;
     }
-    self.registered = [BGTaskScheduler.sharedScheduler registerForTaskWithIdentifier:pattern usingQueue:dispatch_get_main_queue() launchHandler:^(BGTask *task) {
+    self.registered = [BGTaskScheduler.sharedScheduler registerForTaskWithIdentifier:self.identifier usingQueue:dispatch_get_main_queue() launchHandler:^(BGTask *task) {
         RPBackgroundTrial *trial = RPBackgroundTrial.shared;
         if (![task isKindOfClass:BGContinuedProcessingTask.class] || !trial.pending ||
             ![task.identifier isEqualToString:trial.identifier]) { [task setTaskCompletedWithSuccess:NO]; return; }
         trial.pending = NO; trial.task = (BGContinuedProcessingTask *)task;
         trial.state = @"running"; trial.began = NSProcessInfo.processInfo.systemUptime;
         trial.task.progress.totalUnitCount = 120;
+        __weak BGContinuedProcessingTask *runningTask = trial.task;
         trial.task.expirationHandler = ^{
             dispatch_async(dispatch_get_main_queue(), ^{
-                [RPBackgroundTrial.shared finish:@"expired_or_system_cancelled" success:NO message:@"系统结束了后台测试，已保存完成的记录。"];
+                if (runningTask && RPBackgroundTrial.shared.task == runningTask)
+                    [RPBackgroundTrial.shared finish:@"expired_or_system_cancelled" success:NO message:@"系统结束了后台测试，已保存完成的记录。"];
             });
         };
         trial.message = @"系统已接收测试。可切到游戏；10 分钟后查看结果。";
@@ -122,16 +129,22 @@ API_AVAILABLE(ios(26.0))
         trial.timer = [NSTimer scheduledTimerWithTimeInterval:5 target:trial selector:@selector(sample) userInfo:nil repeats:YES];
     }];
     if (!self.registered) { self.state = @"registration_failed"; self.message = @"系统未能注册后台测试。"; }
+    else { self.state = @"registered"; self.message = @"后台测试已注册；服务端就绪后可开始。"; }
     [self saveRegistration];
 }
 - (void)saveRegistration {
     WriteJSON(@"background-registration.json", @{@"registered":@(self.registered), @"state":self.state,
-        @"bundle_id":NSBundle.mainBundle.bundleIdentifier ?: @"", @"message":self.message});
+        @"bundle_id":NSBundle.mainBundle.bundleIdentifier ?: @"", @"message":self.message,
+        @"task_identifier":self.identifier ?: @"", @"pid":@(getpid()),
+        @"build":[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"",
+        @"permitted_identifiers":[NSBundle.mainBundle objectForInfoDictionaryKey:@"BGTaskSchedulerPermittedIdentifiers"] ?: @[],
+        @"registered_at":@([NSDate.date timeIntervalSince1970])});
     [NSNotificationCenter.defaultCenter postNotificationName:RuntimeChanged object:self];
 }
 - (void)submit {
     if (!self.registered || self.task || self.pending || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
-    self.identifier = [NSString stringWithFormat:@"%@.servertrial.%@", NSBundle.mainBundle.bundleIdentifier, NSUUID.UUID.UUIDString];
+    // A separate run token prevents a cancelled HTTP callback from modifying a new run.
+    self.runIdentifier = NSUUID.UUID.UUIDString;
     NSString *previous = [Documents() stringByAppendingPathComponent:@"background-trial.json"];
     if ([NSFileManager.defaultManager fileExistsAtPath:previous]) {
         NSString *history = [Documents() stringByAppendingPathComponent:@"background-history"];
@@ -171,7 +184,7 @@ API_AVAILABLE(ios(26.0))
         [self finish:@"interrupted" success:NO message:@"检查间隔出现中断，不能判定为持续后台运行。记录已保存。"]; return;
     }
     self.previousSample = now;
-    NSString *run = self.identifier;
+    NSString *run = self.runIdentifier;
     BOOL background = UIApplication.sharedApplication.applicationState == UIApplicationStateBackground;
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:
         [NSString stringWithFormat:@"http://127.0.0.1:8088/api/status?backgroundTrial=%@&sample=%lu",run,(unsigned long)self.samples.count]]];
@@ -179,7 +192,7 @@ API_AVAILABLE(ios(26.0))
     self.request = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSDictionary *json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (!self.task || ![self.identifier isEqualToString:run]) return;
+            if (!self.task || ![self.runIdentifier isEqualToString:run]) return;
             self.request = nil;
             NSDictionary *game = [json isKindOfClass:NSDictionary.class] && [json[@"game"] isKindOfClass:NSDictionary.class] ? json[@"game"] : nil;
             NSDictionary *tick = [game[@"tick"] isKindOfClass:NSDictionary.class] ? game[@"tick"] : nil;
@@ -519,7 +532,8 @@ __attribute__((visibility("default"))) void RPHostSceneEvent(NSString *event) {
     [super viewDidLoad]; self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     UIScrollView *scroll = [UIScrollView new]; scroll.translatesAutoresizingMaskIntoConstraints = NO; [self.view addSubview:scroll];
     UILabel *title = [self label:@"本机运行测试" style:UIFontTextStyleLargeTitle];
-    UILabel *subtitle = [self label:@"iPhone 运行验证 · 0.5" style:UIFontTextStyleSubheadline]; subtitle.textColor = UIColor.secondaryLabelColor;
+    NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
+    UILabel *subtitle = [self label:[@"iPhone 运行验证 · " stringByAppendingString:version] style:UIFontTextStyleSubheadline]; subtitle.textColor = UIColor.secondaryLabelColor;
     self.statusLabel = [self label:@"" style:UIFontTextStyleTitle2]; self.detailLabel = [self label:@"" style:UIFontTextStyleBody];
     self.probeButton = [self button:@"检查运行环境" action:@selector(runProbe) prominent:NO];
     self.serverButton = [self button:@"测试本机服务端" action:@selector(runServer) prominent:YES];
