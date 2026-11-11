@@ -13,9 +13,13 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.4</string>
+	<string>0.5</string>
 	<key>CFBundleVersion</key>
-	<string>4</string>
+	<string>5</string>
+	<key>UIBackgroundModes</key>
+	<array><string>processing</string></array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array><string>$(PRODUCT_BUNDLE_IDENTIFIER).servertrial.*</string></array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UIFileSharingEnabled</key>
