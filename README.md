@@ -7,6 +7,13 @@ an OpenJDK Mobile Zero runtime with modules beyond `java.base`.
 The separate Windows experiment has already run AstaPS 7.2 with a Java/H2 embedded datastore,
 disabled JIT, and preserved the account through restart. That does not verify this iOS build.
 
+On November 11, 2026, [simulator run 11](https://github.com/lxingy3/iphone-java-runtime-probe/actions/runs/43017706671)
+passed all twelve checks on OpenJDK 64-Bit Zero VM, Java 28-internal, Darwin.
+[Device build 12](https://github.com/lxingy3/iphone-java-runtime-probe/actions/runs/43018423186)
+produced the corresponding unsigned ARM64 iOS IPA from commit
+`0b265089f2d5330cae65af0c2299a28b99d67aec`.
+Physical iPhone installation, server execution, and game compatibility remain untested.
+
 Only this directory is suitable for an external build. It contains no account snapshot,
 game assets, server private keys, Apple credentials, or personal device identifiers.
 Do not upload the parent experiment directory or the server-payload ZIP.
@@ -35,7 +42,8 @@ parsing `-Djava.home`. The current script makes iOS initialization honor the app
 explicit `JAVA_HOME`. The next eighteen-module simulator test passed that stage but
 failed to reserve its CodeCache. The iOS Zero cache contains entry descriptors pointing
 to precompiled C++ functions, so the current patch reserves it without executable
-permission. This correction still requires a successful native test.
+permission. The corrected runtime passed the native simulator test linked above.
+The harness retains application logs even if the simulator launch command times out.
 The device script also avoids empty-array expansion under macOS Bash 3.2.
 Host tools and the platform-specific native build tree are cached to shorten further experiments.
 
