@@ -376,7 +376,9 @@ audit=pathlib.Path('build/simulator-results');audit.mkdir(parents=True,exist_ok=
 info={'CFBundleExecutable':'ObserverFixture','CFBundleIdentifier':'local.astaps.ObserverFixture',
     'CFBundleName':'ObserverFixture','CFBundleDisplayName':'Observer fixture','CFBundlePackageType':'APPL',
     'CFBundleShortVersionString':'1.0','CFBundleVersion':'1','MinimumOSVersion':'18.5',
-    'UIDeviceFamily':[1,2],'LSRequiresIPhoneOS':True}
+    'UIDeviceFamily':[1,2],'LSRequiresIPhoneOS':True,
+    'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False,'UISceneConfigurations':{
+        'UIWindowSceneSessionRoleApplication':[{'UISceneConfigurationName':'Fixture','UISceneDelegateClassName':'RPCFixtureSceneDelegate'}]}}}
 (p/'Info.plist').write_bytes(plistlib.dumps(info))
 (p/'RuntimeIntegration.plist').write_bytes(plistlib.dumps({'BundlePrefix':'local.astaps.ObserverFixture',
     'ClientVersion':'1.0','ClientBuild':'1'}))
