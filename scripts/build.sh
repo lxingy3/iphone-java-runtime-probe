@@ -88,6 +88,20 @@ after='''#endif
 if after not in s:
     assert s.count(before)==1, 'Unexpected upstream Java home initialization'
     p.write_text(s.replace(before,after))
+p=Path('build/mobile/src/hotspot/share/memory/memoryReserver.cpp')
+s=p.read_text()
+before='''                                 ExecMem,
+                                 mtCode);'''
+after='''#if defined(__IOS__) && defined(ZERO)
+                                 // Zero stores entry descriptors, not generated instructions.
+                                 !ExecMem,
+#else
+                                 ExecMem,
+#endif
+                                 mtCode);'''
+if after not in s:
+    assert s.count(before)==1, 'Unexpected upstream code cache reservation'
+    p.write_text(s.replace(before,after))
 PY
 python3 - <<'PY'
 import hashlib,os,pathlib,urllib.request,zipfile
@@ -180,7 +194,7 @@ for filename in ['conf/security/java.security','lib/tzdb.dat','lib/modules']:
 for filename in ['LICENSE','ASSEMBLY_EXCEPTION']:
     shutil.copy2(pathlib.Path('build/mobile')/filename,image/filename)
 (image/'SOURCE.txt').write_text('OpenJDK Mobile source: https://github.com/openjdk/mobile/tree/c13417aa36f8f44755d0984b58aa735d0b41f233\n')
-(image/'LOCAL-PATCHES.txt').write_text('Exclude JIT WX helpers consistently for Zero. On iOS, honor the embedding app JAVA_HOME before bootstrap path initialization.\nReproducible patches: https://github.com/lxingy3/iphone-java-runtime-probe/blob/main/scripts/build.sh\n')
+(image/'LOCAL-PATCHES.txt').write_text('Exclude JIT WX helpers consistently for Zero. On iOS, honor the embedding app JAVA_HOME before bootstrap path initialization. Reserve the iOS Zero entry-descriptor cache without executable permission.\nReproducible patches: https://github.com/lxingy3/iphone-java-runtime-probe/blob/main/scripts/build.sh\n')
 PY
 libraries=( "$device_root/hotspot/variant-zero/libjvm/objs/static/libjvm.a" "$support_root/libffi.a" )
 for entry in java.base/java java.base/zip java.base/net java.base/nio java.base/jimage java.management/management jdk.management/management_ext; do
