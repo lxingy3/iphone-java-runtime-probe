@@ -54,9 +54,9 @@
             NSArray<NSString*> *arguments = @[
               [@"-Djava.home=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"runtime"]],
               [@"-Djava.class.path=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"DeviceProbe.jar"]],
-              [@"-Duser.dir=" stringByAppendingString:documents], @"-Xint", @"-Xmx256m"
+              [@"-Duser.dir=" stringByAppendingString:documents], @"-Djava.awt.headless=true", @"-Xint", @"-Xmx256m"
             ];
-            JavaVMOption options[5] = {0};
+            JavaVMOption options[6] = {0};
             for (NSUInteger i=0;i<arguments.count;i++) options[i].optionString = strdup(arguments[i].UTF8String);
             JavaVMInitArgs settings = {0};
             settings.version = JNI_VERSION_1_8;
