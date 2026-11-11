@@ -273,6 +273,55 @@ printf '%s\n' 'Restore the pinned portable PollingWatchService through a java.ba
 mkdir -p build/java
 javac --release 21 -encoding UTF-8 -d build/java Java/DeviceProbe.java
 jar --create --file build/DeviceProbe.jar -C build/java .
+# Package the same bootstrap as a library, without an app entry point or scene delegate.
+# This is a host integration kit, not a patched game or a bundled private payload.
+kit="$project_root/build/RuntimeHostKit"
+mkdir -p "$kit"
+framework_library="$(find build/OpenJDK.xcframework -name libOpenJDK.a -type f)"
+framework_headers="$(dirname "$framework_library")/Headers"
+host_target=arm64-apple-ios18.5
+if [[ "$sdk_name" == iphonesimulator ]]; then host_target=arm64-apple-ios18.5-simulator; fi
+xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
+  -fobjc-arc -fmodules -O2 -DRP_EMBEDDED_LIBRARY=1 -I"$framework_headers" \
+  -c App/main.m -o "$kit/RuntimeHostKit.o"
+libtool -static -o "$kit/libRuntimeHostKit.a" "$kit/RuntimeHostKit.o"
+cat > "$kit/RuntimeHostKit.h" <<'HEADER'
+#import <Foundation/Foundation.h>
+// Call on the main thread. The host owns its application and scenes.
+FOUNDATION_EXPORT BOOL RPHostStart(NSString *documents, NSString *resources, BOOL server, NSError **error);
+FOUNDATION_EXPORT NSDictionary *RPHostSnapshot(void);
+FOUNDATION_EXPORT void RPHostSceneEvent(NSString *event);
+HEADER
+cat > "$kit/INTEGRATION.md" <<'GUIDE'
+Experimental same-process runtime integration, not a native game client.
+Link libRuntimeHostKit.a and OpenJDK.xcframework, with -all_load -export_dynamic,
+UIKit, Foundation, BackgroundTasks, libc++, and libz. Copy runtime/, DeviceProbe.jar,
+and RuntimePatch.jar into a resource directory. Preserve OpenJDK license files.
+Use a dedicated private storage directory. A false return provides a host-contract
+error; a true return means startup was requested, NOT that the server is ready.
+Poll RPHostSnapshot on the main thread. Never create a second JVM during resize,
+fold, rotation, backgrounding or scene replacement. Forward scene events explicitly.
+The kit does not change process cwd or redirect native stdout/stderr.
+The existing private server payload still uses relative java.io paths. Server mode
+therefore requires the host to establish <storage>/server as its cwd BEFORE either
+engine initializes. Real game coexistence with this requirement is UNVERIFIED;
+do not inject this library into an already running game. Absolute path migration
+is required before removing this guard. Probe mode does not require changing cwd.
+Game binary/version/ABI checks, signing, login redirect, protocol/signature support,
+actual gameplay, foreground memory budget, saving and relaunch are still required.
+No game executable, game assets, keys, accounts or private saved data are in this kit.
+GUIDE
+xcrun nm -gU "$kit/libRuntimeHostKit.a" > "$kit/symbols.txt"
+python3 - <<'PY'
+import json,pathlib
+p=pathlib.Path('build/RuntimeHostKit')
+symbols=(p/'symbols.txt').read_text()
+required=['_RPHostStart','_RPHostSnapshot','_RPHostSceneEvent']
+assert all(x in symbols for x in required)
+assert not any(line.rstrip().endswith(' T _main') for line in symbols.splitlines())
+(p/'contract.json').write_text(json.dumps({'exported_entry_points':required,'has_app_entry_point':False,
+    'game_client_included':False,'game_integration_verified':False,'runtime_coexistence_tested':False},indent=2))
+PY
 xcodegen generate --spec project.yml
 xcodebuild -project RuntimeProbe.xcodeproj -scheme RuntimeProbe -configuration Release \
   -destination "$build_destination" -derivedDataPath build/DerivedData ARCHS=arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
@@ -328,7 +377,7 @@ except Exception as failure:
 finally:
     if container:
         for source in (container/'Documents').glob('*'):
-            if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log','host-status.json','layout-history.json','checksum-benchmark.json'] or source.name.startswith('hs_err_pid')):
+            if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log','host-status.json','layout-history.json','checksum-benchmark.json','background-trial.json','lifecycle.jsonl'] or source.name.startswith('hs_err_pid')):
                 shutil.copy2(source,output/source.name)
     try:
         command('xcrun','simctl','io',udid,'enumerate',check=False,timeout=30)
@@ -358,4 +407,4 @@ fi
 mkdir -p build/Payload
 cp -R build/DerivedData/Build/Products/Release-iphoneos/RuntimeProbe.app build/Payload/
 (cd build && zip -qr RuntimeProbe.ipa Payload)
-echo 'Unsigned 0.4 experimental IPA created. This revision requires physical-device validation.'
+echo 'Unsigned 0.5 experimental IPA and host integration kit created. Physical validation is still required.'
