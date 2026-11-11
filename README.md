@@ -16,11 +16,12 @@ Do not upload the parent experiment directory or the server-payload ZIP.
 Requirements: an Apple Silicon Mac with Xcode's iPhoneOS SDK, JDK 27, GNU make, autoconf, XcodeGen,
 Python 3, Git, and network access to the pinned open-source dependencies.
 
-The script downloads a checksum-pinned macOS JDK 28 EA for module packaging. It builds
-the iOS Zero VM and three required native-library modules as static libraries, then
-packages ten Java modules with host `jmod`/`jlink`. The first experiment using the generic
-OpenJDK `images` target failed because that iOS target supplied ELF `-soname` flags to
-Apple's linker. The revised static-only route is awaiting a successful native build.
+The script builds matching macOS packaging tools and the iOS Zero VM from the same
+pinned OpenJDK Mobile source. It builds three native-library modules as static libraries,
+then packages eleven Java modules, including `jdk.zipfs` for server JAR resources.
+The first experiment failed on ELF `-soname` flags from the generic iOS `images` target.
+The second compiled the native iOS libraries successfully, but a vendor JDK's `jlink`
+rejected the target build signature. The current same-source toolchain awaits validation.
 
 Run `bash scripts/build.sh` or use the included manually triggered GitHub Actions workflow.
 The workflow uses a standard macOS runner, has a 90-minute timeout, and has no scheduled runs.
@@ -35,7 +36,7 @@ failure is an experiment result, not evidence that the phone can run AstaPS.
 1. Install the signed test IPA on the target phone.
 2. Keep the app in the foreground and tap Run.
 3. Export `runtime-probe.json` and `jvm-output.log` through Files.
-4. Require successful file I/O, threads, reflection, TCP/UDP loopback, RSA, XML, and management APIs.
+4. Require successful file I/O, JAR filesystems, threads, reflection, TCP/UDP loopback, RSA, XML, and management APIs.
 5. Only then integrate the actual embedded server payload and measure memory/performance.
 
 A foreground server test still does not solve native Genshin client compatibility or same-process
