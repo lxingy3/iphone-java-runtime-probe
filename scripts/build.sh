@@ -344,10 +344,35 @@ cp "$kit/RuntimeHost.dylib" "$kit/RuntimeClientProbe.dylib" "$fixture/Frameworks
 xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
   -fobjc-arc -fmodules -O2 -DRP_CLIENT_FIXTURE=1 App/main.m \
   "$kit/RuntimeClientProbe.dylib" "$kit/RuntimeHost.dylib" -framework UIKit -framework Foundation \
-  -o "$fixture/ObserverFixture"
+  -Wl,-headerpad_max_install_names -o "$fixture/ObserverFixture"
+# The executable directly calls the host API; unlike the observer dylib, its
+# loader directory is the app root, not Frameworks. Keep the production dylib
+# identity unchanged and correct only this simulator fixture's direct import.
+xcrun install_name_tool -change @loader_path/RuntimeHost.dylib \
+  @executable_path/Frameworks/RuntimeHost.dylib "$fixture/ObserverFixture"
 python3 - <<'PY'
-import pathlib,plistlib,shutil
+import json,pathlib,plistlib,shutil,struct
 p=pathlib.Path('build/ObserverFixture.app')
+links=[]
+for binary in [p/'ObserverFixture',p/'Frameworks/RuntimeClientProbe.dylib',p/'Frameworks/RuntimeHost.dylib']:
+    data=binary.read_bytes()
+    assert struct.unpack_from('<I',data)[0]==0xfeedfacf
+    count=struct.unpack_from('<I',data,16)[0]; offset=32
+    for _ in range(count):
+        command,size=struct.unpack_from('<II',data,offset)
+        if command in (0xc,0x80000018,0x8000001f):
+            start=offset+struct.unpack_from('<I',data,offset+8)[0]
+            name=data[start:data.index(b'\0',start)].decode()
+            target=None
+            if name.startswith('@loader_path/'): target=binary.parent/name[len('@loader_path/'):]
+            elif name.startswith('@executable_path/'): target=p/name[len('@executable_path/'):]
+            if target is not None:
+                assert target.is_file(),(str(binary),name,str(target))
+                links.append({'binary':str(binary.relative_to(p)),'dependency':name,'resolved':str(target.relative_to(p))})
+            else: assert name.startswith(('/System/Library/','/usr/lib/')),(str(binary),name)
+        offset+=size
+audit=pathlib.Path('build/simulator-results');audit.mkdir(parents=True,exist_ok=True)
+(audit/'fixture-link-audit.json').write_text(json.dumps({'passed':True,'links':links},indent=2))
 info={'CFBundleExecutable':'ObserverFixture','CFBundleIdentifier':'local.astaps.ObserverFixture',
     'CFBundleName':'ObserverFixture','CFBundleDisplayName':'Observer fixture','CFBundlePackageType':'APPL',
     'CFBundleShortVersionString':'1.0','CFBundleVersion':'1','MinimumOSVersion':'18.5',
@@ -401,6 +426,8 @@ device=candidates[0];udid=device['udid']
 command('xcrun','simctl','help',check=False)
 command('xcrun','simctl','io',udid,'help',check=False)
 container=None
+fixture_containers={}
+test_started=time.time()
 observer_results=[]
 result={'passed':False,'error':'No report before timeout'}
 try:
@@ -410,6 +437,7 @@ try:
         bundle='local.astaps.ObserverFixture.Embedded' if variant=='ObserverFixtureEmbedded' else 'local.astaps.'+variant
         command('xcrun','simctl','install',udid,'build/'+variant+'.app')
         fixture_container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,bundle,'data').stdout.strip())
+        fixture_containers[variant]=fixture_container
         for old in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/host-status.json']:
             stale=fixture_container/'Documents'/old
             if stale.is_file(): stale.unlink()
@@ -455,6 +483,20 @@ try:
 except Exception as failure:
     result={'passed':False,'error':repr(failure)}
 finally:
+    for variant,fixture_container in fixture_containers.items():
+        for relative in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/host-status.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/jvm-output.log']:
+            source=fixture_container/'Documents'/relative
+            if source.is_file(): shutil.copy2(source,output/(variant+'-'+source.name))
+    crash_directory=pathlib.Path.home()/'Library/Logs/DiagnosticReports'
+    for source in crash_directory.glob('ObserverFixture*.ips'):
+        if source.stat().st_mtime>=test_started and source.stat().st_size<5_000_000:
+            shutil.copy2(source,output/source.name)
+    if result.get('passed') is not True:
+        try:
+            failure_log=command('xcrun','simctl','spawn',udid,'log','show','--last','2m','--style','compact','--predicate',
+                'process == "ObserverFixture" OR eventMessage CONTAINS "local.astaps.ObserverFixture"',check=False,timeout=30)
+            (output/'fixture-launch-log.txt').write_text((failure_log.stdout or '')[-200000:])
+        except (subprocess.TimeoutExpired,subprocess.CalledProcessError): pass
     if container:
         for source in (container/'Documents').glob('*'):
             if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log','host-status.json','layout-history.json','checksum-benchmark.json','background-trial.json','background-registration.json','background-parser-tests.json','lifecycle.jsonl'] or source.name.startswith('hs_err_pid')):
