@@ -1,6 +1,6 @@
 # iPhone Java runtime probe
 
-This is an **unbuilt experimental iOS test app**, not Genshin and not a working private-server IPA.
+This is an **experimental iOS test app**, not Genshin and not a working private-server IPA.
 It tests a prerequisite for running the existing private server locally on a non-jailbroken phone:
 an OpenJDK Mobile Zero runtime with modules beyond `java.base`.
 
@@ -29,10 +29,13 @@ The fourth and fifth builds identified additional inconsistent guards in
 `thread.inline.hpp` and `os_bsd_zero.cpp`.
 The script now excludes those JIT-specific macros for Zero and applies the same guard
 to the inline and OS definitions. The app minimum OS matches the native libraries' iOS 18.5 SDK.
-The corrected guards compiled the eleven-module simulator runtime successfully.
-The eighteen-module app and runtime checks still require a successful native test.
+The corrected guards built the eleven-module simulator app successfully. Its real
+startup failed with `Failed setting boot class path`: JNI initializes that path before
+parsing `-Djava.home`. The current script makes iOS initialization honor the app's
+explicit `JAVA_HOME`. This correction and the eighteen-module runtime still require
+a successful native test.
 The device script also avoids empty-array expansion under macOS Bash 3.2.
-Completed host tools are cached to avoid repeating their build during further experiments.
+Host tools and the platform-specific native build tree are cached to shorten further experiments.
 
 Selecting the manual workflow's `simulator` target builds a separate ARM64 simulator
 library and launches the app with `--probe-auto-run`. JSON results, JVM output, and a
