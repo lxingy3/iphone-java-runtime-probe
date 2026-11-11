@@ -183,7 +183,7 @@ public final class DeviceProbe {
             } finally { executor.shutdownNow(); }
         });
         check("file_persistence", () -> {
-            var file=Path.of("probe-storage.txt");
+            var file=Path.of(System.getProperty("user.dir"), "probe-storage.txt");
             String value="local-server-probe";
             Files.writeString(file,value);
             if (!Files.readString(file).equals(value)) throw new IOException("File round-trip changed");
@@ -257,7 +257,7 @@ public final class DeviceProbe {
             .append(",\n  \"os\": ").append(quote(System.getProperty("os.name"))).append(",\n  \"checks\": {");
         String separator="";
         for(var entry:results.entrySet()){json.append(separator).append("\n    ").append(quote(entry.getKey())).append(": ").append(quote(entry.getValue()));separator=",";}
-        json.append("\n  }\n}\n");Files.writeString(Path.of("runtime-probe.json"),json.toString());
+        json.append("\n  }\n}\n");Files.writeString(Path.of(System.getProperty("user.dir"), "runtime-probe.json"),json.toString());
     }
     static String quote(String value){return "\""+value.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n").replace("\r","\\r")+"\"";}
 }
