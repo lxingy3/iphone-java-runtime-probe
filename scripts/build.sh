@@ -244,7 +244,7 @@ if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then
   git init "$verify_source"
   git -C "$verify_source" remote add origin https://github.com/openjdk/mobile.git
   git -C "$verify_source" fetch --depth 1 --filter=blob:none origin c13417aa36f8f44755d0984b58aa735d0b41f233
-  git -C "$verify_source" sparse-checkout set src/java.base/share/native/libverify src/java.base/share/native/libjava src/hotspot/share/include src/hotspot/os
+  git -C "$verify_source" sparse-checkout set src/java.base/share/native/libverify src/java.base/share/native/libjava src/java.base/unix/native/libjava src/hotspot/share/include src/hotspot/os
   git -C "$verify_source" checkout --detach FETCH_HEAD
   framework_library="$(find build/OpenJDK.xcframework -name libOpenJDK.a -type f)"
   test -n "$framework_library"
@@ -254,6 +254,7 @@ if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then
   xcrun --sdk "$sdk_name" clang -target "$verify_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
     -O2 -DSTATIC_BUILD -DNDEBUG -I"$framework_headers" \
     -I"$verify_source/src/java.base/share/native/libjava" \
+    -I"$verify_source/src/java.base/unix/native/libjava" \
     -I"$verify_source/src/hotspot/share/include" -I"$verify_source/src/hotspot/os/posix/include" \
     -c "$verify_source/src/java.base/share/native/libverify/check_code.c" -o build/verify.o
   libtool -static -o build/OpenJDK-with-verify.a "$framework_library" build/verify.o
