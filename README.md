@@ -18,7 +18,9 @@ and [device build 12](https://github.com/lxingy3/iphone-java-runtime-probe/actio
 produced the tested runtime. The separate Windows experiment ran the embedded server
 with JIT disabled and preserved the account through restart.
 
-Version 0.2 adds a private-payload loader and Duo-aware UI; it requires separate validation.
+Version 0.2 added a private-payload loader and Duo-aware UI. Simulator runs 13/15 passed all twelve checks, and physical size-transition reports retained one process and one JVM start across outer display, inner display, and landscape. Partial-fold angles and complete visual acceptance remain unverified.
+
+Version 0.3 moves first-install archive SHA-256 out of the Zero interpreter into iOS CommonCrypto, reports verification and extraction progress, and keeps the foreground test awake. A simulator benchmark compares native and Java hashing of the same 16 MiB file against a known digest. Performance improvement must be measured; full private-payload validation is a separate physical test.
 Full server execution on the phone, sustained memory usage, background survival, native game
 client integration, and folding transitions have not yet passed acceptance.
 
@@ -62,7 +64,7 @@ Signing and installation are separate steps. No cloud game server or paid subscr
 
 The host expects `Documents/server-payload.zip` and a matching `server-payload.sha256`.
 The archive must include a reviewed Java launcher, dependency JARs, resources, and configuration.
-It is hashed before extraction. Entry paths and extracted size are bounded. After preparation,
+It is hashed by the native host before extraction. Java verifies the computed digest against the expected checksum; non-native callers retain the original Java hashing path. Entry paths and extracted size are bounded. After preparation,
 a matching marker reuses the existing server directory without replacing its saved database.
 The launcher is loaded with an isolated URLClassLoader in the existing Zero JVM.
 Neither native dynamic code nor JIT entitlement is needed for this experiment.

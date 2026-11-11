@@ -28,5 +28,5 @@ targets:
         OTHER_LDFLAGS: '$(inherited) -Wl,-all_load -lc++ -lz'
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
-        MARKETING_VERSION: '0.2'
-        CURRENT_PROJECT_VERSION: '2'
+        MARKETING_VERSION: '0.3'
+        CURRENT_PROJECT_VERSION: '3'
