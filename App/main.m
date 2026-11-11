@@ -14,12 +14,13 @@ extern NSDictionary *RPHostSnapshot(void);
 + (NSString *)encryptString:(NSString *)input publicKey:(NSString *)key { return [@"original:" stringByAppendingString:input]; }
 + (NSData *)encryptData:(NSData *)input publicKey:(NSString *)key { return [input copy]; }
 @end
-@interface RPCFixtureDelegate : UIResponder <UIApplicationDelegate>
+@interface RPCFixtureSceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property(nonatomic,strong) UIWindow *window;
 @end
-@implementation RPCFixtureDelegate
-- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
-    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+@implementation RPCFixtureSceneDelegate
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+    if (![scene isKindOfClass:UIWindowScene.class]) return;
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     UIViewController *controller = [UIViewController new];
     controller.view.backgroundColor = UIColor.systemBackgroundColor;
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(24,100,330,160)];
@@ -103,7 +104,15 @@ extern NSDictionary *RPHostSnapshot(void);
             }
         });
     });
-    return YES;
+}
+@end
+@interface RPCFixtureDelegate : UIResponder <UIApplicationDelegate>
+@end
+@implementation RPCFixtureDelegate
+- (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+    UISceneConfiguration *configuration = [[UISceneConfiguration alloc] initWithName:@"Fixture" sessionRole:session.role];
+    configuration.delegateClass = RPCFixtureSceneDelegate.class;
+    return configuration;
 }
 @end
 int main(int argc,char **argv) { @autoreleasepool { return UIApplicationMain(argc,argv,nil,NSStringFromClass(RPCFixtureDelegate.class)); } }
