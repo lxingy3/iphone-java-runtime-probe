@@ -222,7 +222,7 @@ for filename in ['LICENSE','ASSEMBLY_EXCEPTION']:
 (image/'LOCAL-PATCHES.txt').write_text('Exclude JIT WX helpers consistently for Zero. On iOS, honor the embedding app JAVA_HOME before bootstrap path initialization. Reserve the iOS Zero entry-descriptor cache without executable permission.\nReproducible patches: https://github.com/lxingy3/iphone-java-runtime-probe/blob/main/scripts/build.sh\n')
 PY
 libraries=( "$device_root/hotspot/variant-zero/libjvm/objs/static/libjvm.a" "$support_root/libffi.a" )
-for entry in java.base/java java.base/zip java.base/net java.base/nio java.base/jimage java.management/management jdk.management/management_ext; do
+for entry in java.base/java java.base/verify java.base/zip java.base/net java.base/nio java.base/jimage java.management/management jdk.management/management_ext; do
   module="${entry%/*}"; library="${entry#*/}"
   native_library="$device_root/support/native/$module/lib$library/static/lib$library.a"
   test -f "$native_library" || { echo "Missing native iOS library: $native_library"; exit 3; }
@@ -236,6 +236,30 @@ if [[ -e build/OpenJDK.xcframework ]]; then
   echo 'Framework already exists; use a clean checkout to rebuild.' >&2; exit 3
 fi
 xcodebuild -create-xcframework -library "$project_root/build/libOpenJDK.a" -headers "$project_root/build/include" -output "$project_root/build/OpenJDK.xcframework"
+fi
+if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then
+  # The first runtime archive omitted libverify. Older dependencies still need
+  # VerifyClassForMajorVersion; compile its matching pinned source without weakening verification.
+  verify_source="$project_root/build/verify-source"
+  git init "$verify_source"
+  git -C "$verify_source" remote add origin https://github.com/openjdk/mobile.git
+  git -C "$verify_source" fetch --depth 1 --filter=blob:none origin c13417aa36f8f44755d0984b58aa735d0b41f233
+  git -C "$verify_source" sparse-checkout set src/java.base/share/native/libverify src/java.base/share/native/libjava src/hotspot/share/include src/hotspot/os
+  git -C "$verify_source" checkout --detach FETCH_HEAD
+  framework_library="$(find build/OpenJDK.xcframework -name libOpenJDK.a -type f)"
+  test -n "$framework_library"
+  framework_headers="$(dirname "$framework_library")/Headers"
+  verify_target=arm64-apple-ios18.5
+  if [[ "$sdk_name" == iphonesimulator ]]; then verify_target=arm64-apple-ios18.5-simulator; fi
+  xcrun --sdk "$sdk_name" clang -target "$verify_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
+    -O2 -DSTATIC_BUILD -DNDEBUG -I"$framework_headers" \
+    -I"$verify_source/src/java.base/share/native/libjava" \
+    -I"$verify_source/src/hotspot/share/include" -I"$verify_source/src/hotspot/os/posix/include" \
+    -c "$verify_source/src/java.base/share/native/libverify/check_code.c" -o build/verify.o
+  libtool -static -o build/OpenJDK-with-verify.a "$framework_library" build/verify.o
+  cp build/OpenJDK-with-verify.a "$framework_library"
+  xcrun nm -gU "$framework_library" | grep ' T _VerifyClassForMajorVersion$'
+  printf '%s\n' 'Link the pinned legacy bytecode verifier into the embedding app; retain bytecode verification.' >> build/runtime/LOCAL-PATCHES.txt
 fi
 mkdir -p build/java
 javac --release 21 -encoding UTF-8 -d build/java Java/DeviceProbe.java
