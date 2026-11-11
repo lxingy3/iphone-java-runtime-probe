@@ -336,6 +336,35 @@ xcodegen generate --spec project.yml
 xcodebuild -project RuntimeProbe.xcodeproj -scheme RuntimeProbe -configuration Release \
   -destination "$build_destination" -derivedDataPath build/DerivedData ARCHS=arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 if [[ "$sdk_name" == iphonesimulator ]]; then
+# Exercise the actual dynamic libraries in a small independent UIKit host. The
+# negative bundle checks that an unexpected host cannot activate instrumentation.
+fixture="$project_root/build/ObserverFixture.app"
+mkdir -p "$fixture/Frameworks"
+cp "$kit/RuntimeHost.dylib" "$kit/RuntimeClientProbe.dylib" "$fixture/Frameworks/"
+xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
+  -fobjc-arc -fmodules -O2 -DRP_CLIENT_FIXTURE=1 App/main.m \
+  "$kit/RuntimeClientProbe.dylib" -framework UIKit -framework Foundation \
+  -o "$fixture/ObserverFixture"
+python3 - <<'PY'
+import pathlib,plistlib,shutil
+p=pathlib.Path('build/ObserverFixture.app')
+info={'CFBundleExecutable':'ObserverFixture','CFBundleIdentifier':'local.astaps.ObserverFixture',
+    'CFBundleName':'ObserverFixture','CFBundleDisplayName':'Observer fixture','CFBundlePackageType':'APPL',
+    'CFBundleShortVersionString':'1.0','CFBundleVersion':'1','MinimumOSVersion':'18.5',
+    'UIDeviceFamily':[1,2],'LSRequiresIPhoneOS':True}
+(p/'Info.plist').write_bytes(plistlib.dumps(info))
+(p/'RuntimeIntegration.plist').write_bytes(plistlib.dumps({'BundlePrefix':'local.astaps.ObserverFixture',
+    'ClientVersion':'1.0','ClientBuild':'1'}))
+q=pathlib.Path('build/ObserverFixtureWrong.app')
+shutil.copytree(p,q,dirs_exist_ok=True)
+info['CFBundleIdentifier']='local.astaps.ObserverFixtureWrong'
+(q/'Info.plist').write_bytes(plistlib.dumps(info))
+PY
+for fixture_path in "$fixture" "$project_root/build/ObserverFixtureWrong.app"; do
+  codesign --force --sign - "$fixture_path/Frameworks/RuntimeHost.dylib"
+  codesign --force --sign - "$fixture_path/Frameworks/RuntimeClientProbe.dylib"
+  codesign --force --sign - "$fixture_path"
+done
 python3 - <<'PY'
 import json,pathlib,re,shutil,subprocess,time
 output=pathlib.Path('build/simulator-results');output.mkdir(parents=True,exist_ok=True)
@@ -364,10 +393,27 @@ device=duo[0];udid=device['udid']
 command('xcrun','simctl','help',check=False)
 command('xcrun','simctl','io',udid,'help',check=False)
 container=None
+observer_results=[]
 result={'passed':False,'error':'No report before timeout'}
 try:
     if device['state']!='Booted': command('xcrun','simctl','boot',udid)
     command('xcrun','simctl','bootstatus',udid,'-b',timeout=240)
+    for variant,arguments in [('ObserverFixture',[]),('ObserverFixtureWrong',['--expect-observer-disabled'])]:
+        bundle='local.astaps.'+variant
+        command('xcrun','simctl','install',udid,'build/'+variant+'.app')
+        fixture_container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,bundle,'data').stdout.strip())
+        command('xcrun','simctl','launch','--terminate-running-process',udid,bundle,*arguments,timeout=60)
+        fixture_report=fixture_container/'Documents/observer-fixture.json'
+        for _ in range(30):
+            if fixture_report.is_file(): break
+            time.sleep(1)
+        fixture_result=json.loads(fixture_report.read_text()) if fixture_report.is_file() else {'passed':False,'error':'No observer fixture report'}
+        fixture_result['fixture']=variant
+        observer_results.append(fixture_result)
+        (output/(variant+'.json')).write_text(json.dumps(fixture_result,indent=2))
+        observations=fixture_container/'Documents/RuntimeIntegration/client-observations.json'
+        if observations.is_file(): shutil.copy2(observations,output/(variant+'-observations.json'))
+        command('xcrun','simctl','terminate',udid,bundle,check=False,timeout=30)
     command('xcrun','simctl','install',udid,'build/DerivedData/Build/Products/Release-iphonesimulator/RuntimeProbe.app')
     container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,'local.astaps.RuntimeProbe','data').stdout.strip())
     try:
@@ -383,7 +429,7 @@ try:
     result['checksum_benchmark']=json.loads(benchmark.read_text()) if benchmark.is_file() else {'passed':False,'error':'Missing checksum benchmark'}
     parser_report=container/'Documents/background-parser-tests.json'
     result['background_parser']=json.loads(parser_report.read_text()) if parser_report.is_file() else {'passed':False,'error':'Missing parser tests'}
-    result['passed']=result.get('passed') is True and result['checksum_benchmark'].get('passed') is True and result['background_parser'].get('passed') is True
+    result['passed']=result.get('passed') is True and result['checksum_benchmark'].get('passed') is True and result['background_parser'].get('passed') is True and len(observer_results)==2 and all(x.get('passed') is True for x in observer_results)
 except Exception as failure:
     result={'passed':False,'error':repr(failure)}
 finally:
@@ -410,6 +456,7 @@ finally:
         result['visual_capture_error']=repr(failure)
         log('Screenshot unavailable: '+repr(failure))
 result['environment']='iOS Simulator, not a physical iPhone'
+result['observer_fixtures']=observer_results
 (output/'acceptance.json').write_text(json.dumps(result,indent=2))
 print(json.dumps(result,indent=2))
 if not result['passed']: raise SystemExit('Simulator runtime probe failed; inspect retained results')
@@ -419,4 +466,4 @@ fi
 mkdir -p build/Payload
 cp -R build/DerivedData/Build/Products/Release-iphoneos/RuntimeProbe.app build/Payload/
 (cd build && zip -qr RuntimeProbe.ipa Payload)
-echo 'Unsigned 0.5 experimental IPA and host integration kit created. Physical validation is still required.'
+echo 'Unsigned 0.6 experimental IPA and host integration kit created. Physical validation is still required.'
