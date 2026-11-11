@@ -107,6 +107,8 @@ and `PROBE_RUNTIME_SHA256`. An old runtime archive alone does not provide Duo la
 the app is compiled and linked with the new SDK, recorded in `toolchain.json`.
 
 Select `simulator` for the iPhone Duo simulator and automatic runtime checks.
+Select `simulator-standard` to isolate generic runtime tests on a non-Duo iPhone.
+That profile provides no Duo layout or folding evidence.
 Results include a screenshot, runtime reports, window geometry, and command help.
 Three small UIKit fixtures also load the actual observation libraries. They check original
 method and URL results, URL filtering, omission of input/query/key contents, and rejection
