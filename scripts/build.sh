@@ -221,26 +221,50 @@ if [[ "$sdk_name" == iphonesimulator ]]; then
 python3 - <<'PY'
 import json,pathlib,shutil,subprocess,time
 output=pathlib.Path('build/simulator-results');output.mkdir(parents=True,exist_ok=True)
+def log(message):
+    print(message,flush=True)
+    with (output/'simulator-commands.log').open('a') as stream: stream.write(message+'\n')
 def command(*args,check=True,timeout=180):
-    return subprocess.run(args,check=check,capture_output=True,text=True,timeout=timeout)
+    log('Running: '+repr(args))
+    try:
+        result=subprocess.run(args,check=check,capture_output=True,text=True,timeout=timeout)
+        if result.stdout: log(result.stdout)
+        if result.stderr: log(result.stderr)
+        return result
+    except (subprocess.TimeoutExpired,subprocess.CalledProcessError) as failure:
+        log(repr(failure))
+        for value in [failure.stdout,failure.stderr]:
+            if value: log(value.decode(errors='replace') if isinstance(value,bytes) else value)
+        raise
 inventory=json.loads(command('xcrun','simctl','list','devices','available','--json').stdout)
 devices=[d for runtime,items in inventory['devices'].items() if '.iOS-' in runtime for d in items if d['name'].startswith('iPhone')]
 if not devices: raise SystemExit('No available iPhone simulator runtime')
 device=next((d for d in devices if d['state']=='Booted'),devices[0]);udid=device['udid']
-if device['state']!='Booted': command('xcrun','simctl','boot',udid)
-command('xcrun','simctl','bootstatus',udid,'-b',timeout=240)
-command('xcrun','simctl','install',udid,'build/DerivedData/Build/Products/Release-iphonesimulator/RuntimeProbe.app')
-command('xcrun','simctl','launch','--terminate-running-process',udid,'local.astaps.RuntimeProbe','--probe-auto-run')
-container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,'local.astaps.RuntimeProbe','data').stdout.strip())
-report=container/'Documents/runtime-probe.json'
-for _ in range(120):
-    if report.is_file(): break
-    time.sleep(1)
-for name in ['runtime-probe.json','jvm-output.log']:
-    source=container/'Documents'/name
-    if source.is_file(): shutil.copy2(source,output/name)
-command('xcrun','simctl','io',udid,'screenshot',str(output/'screen.png'),check=False)
-result=json.loads(report.read_text()) if report.is_file() else {'passed':False,'error':'No report before timeout'}
+container=None
+result={'passed':False,'error':'No report before timeout'}
+try:
+    if device['state']!='Booted': command('xcrun','simctl','boot',udid)
+    command('xcrun','simctl','bootstatus',udid,'-b',timeout=240)
+    command('xcrun','simctl','install',udid,'build/DerivedData/Build/Products/Release-iphonesimulator/RuntimeProbe.app')
+    container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,'local.astaps.RuntimeProbe','data').stdout.strip())
+    try:
+        command('xcrun','simctl','launch','--terminate-running-process',udid,'local.astaps.RuntimeProbe','--probe-auto-run',timeout=60)
+    except (subprocess.TimeoutExpired,subprocess.CalledProcessError):
+        log('Launch did not return normally; collecting the installed app evidence anyway.')
+    report=container/'Documents/runtime-probe.json'
+    for _ in range(120):
+        if report.is_file(): break
+        time.sleep(1)
+    if report.is_file(): result=json.loads(report.read_text())
+except Exception as failure:
+    result={'passed':False,'error':repr(failure)}
+finally:
+    if container:
+        for source in (container/'Documents').glob('*'):
+            if source.is_file() and (source.name in ['runtime-probe.json','jvm-output.log'] or source.name.startswith('hs_err_pid')):
+                shutil.copy2(source,output/source.name)
+    try: command('xcrun','simctl','io',udid,'screenshot',str(output/'screen.png'),check=False,timeout=30)
+    except Exception as failure: log('Screenshot unavailable: '+repr(failure))
 result['environment']='iOS Simulator, not a physical iPhone'
 (output/'acceptance.json').write_text(json.dumps(result,indent=2))
 print(json.dumps(result,indent=2))
