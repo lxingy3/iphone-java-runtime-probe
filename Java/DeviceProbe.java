@@ -27,6 +27,18 @@ public final class DeviceProbe {
             Files.writeString(file,value);
             if (!Files.readString(file).equals(value)) throw new IOException("File round-trip changed");
         });
+        check("jar_filesystem", () -> {
+            Path archive=Path.of("probe-resource.zip").toAbsolutePath();
+            try(var output=new java.util.zip.ZipOutputStream(Files.newOutputStream(archive))) {
+                output.putNextEntry(new java.util.zip.ZipEntry("defaults/probe.txt"));
+                output.write("resource-ok".getBytes(StandardCharsets.UTF_8));
+                output.closeEntry();
+            }
+            try(var filesystem=FileSystems.newFileSystem(URI.create("jar:"+archive.toUri()),Map.of())) {
+                if(!Files.readString(filesystem.getPath("/defaults/probe.txt")).equals("resource-ok"))
+                    throw new IOException("JAR resource mismatch");
+            } finally { Files.deleteIfExists(archive); }
+        });
         check("platform_threads", () -> {
             var done=new CountDownLatch(1);
             new Thread(done::countDown).start();
