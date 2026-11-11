@@ -53,6 +53,8 @@
             NSString *log = [documents stringByAppendingPathComponent:@"jvm-output.log"];
             freopen(log.fileSystemRepresentation,"a",stdout);
             freopen(log.fileSystemRepresentation,"a",stderr);
+            fprintf(stderr,"Probe: starting JNI_CreateJavaVM with bundled runtime\n");
+            fflush(stderr);
             NSArray<NSString*> *arguments = @[
               [@"-Djava.home=" stringByAppendingString:runtimeHome],
               [@"-Djava.class.path=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"DeviceProbe.jar"]],
@@ -68,6 +70,8 @@
             JavaVM *vm = NULL;
             JNIEnv *env = NULL;
             jint result = JNI_CreateJavaVM(&vm,(void**)&env,&settings);
+            fprintf(stderr,"Probe: JNI_CreateJavaVM returned %d\n",result);
+            fflush(stderr);
             NSString *message = [NSString stringWithFormat:@"Java 启动返回值：%d。详情见 jvm-output.log。",result];
             if (result == JNI_OK) {
                 jclass cls = (*env)->FindClass(env,"DeviceProbe");
