@@ -1,81 +1,82 @@
-# iPhone Java runtime probe
+# iPhone Java runtime experiment
 
-This is an **experimental iOS test app**, not Genshin and not a working private-server IPA.
-It tests a prerequisite for running the existing private server locally on a non-jailbroken phone:
-an OpenJDK Mobile Zero runtime with modules beyond `java.base`.
+This is an experimental native iOS host, **not a working game client**.
+Only these eight source files belong in the public repository. No game resources,
+account snapshot, server private keys, signing credentials, or personal device identifiers are included.
+The private server payload is transferred locally over USB and must not be uploaded here.
 
-The separate Windows experiment has already run AstaPS 7.2 with a Java/H2 embedded datastore,
-disabled JIT, and preserved the account through restart. That does not verify this iOS build.
+## Verified results
 
-On November 11, 2026, [simulator run 11](https://github.com/lxingy3/iphone-java-runtime-probe/actions/runs/43017706671)
-passed all twelve checks on OpenJDK 64-Bit Zero VM, Java 28-internal, Darwin.
-[Device build 12](https://github.com/lxingy3/iphone-java-runtime-probe/actions/runs/43018423186)
-produced the corresponding unsigned ARM64 iOS IPA from commit
-`0b265089f2d5330cae65af0c2299a28b99d67aec`.
-Physical iPhone installation, server execution, and game compatibility remain untested.
+On November 11, 2026, version 0.1 passed all twelve runtime checks on a physical
+non-jailbroken iPhone running iOS 27.3: module loading, JavaBeans introspection,
+scheduling, file persistence, JAR filesystems, platform threads, reflection,
+TCP/UDP loopback, RSA, XML, and management APIs. The VM was OpenJDK 64-Bit Zero VM,
+Java 28-internal, Darwin. This proves those prerequisites, not full server or game compatibility.
 
-Only this directory is suitable for an external build. It contains no account snapshot,
-game assets, server private keys, Apple credentials, or personal device identifiers.
-Do not upload the parent experiment directory or the server-payload ZIP.
+[Simulator run 11](https://github.com/lxingy3/iphone-java-runtime-probe/actions/runs/43017706671)
+and [device build 12](https://github.com/lxingy3/iphone-java-runtime-probe/actions/runs/43018423186)
+produced the tested runtime. The separate Windows experiment ran the embedded server
+with JIT disabled and preserved the account through restart.
+
+Version 0.2 adds a private-payload loader and Duo-aware UI; it requires separate validation.
+Full server execution on the phone, sustained memory usage, background survival, native game
+client integration, and folding transitions have not yet passed acceptance.
+
+## Duo layout and lifecycle
+
+Build the app using Xcode 27.1 and the iOS 27.1 SDK or newer. The app uses a UIWindowScene,
+UIArrangementViewController on supported systems, safe-area constraints, scrollable panels,
+and Dynamic Type. It reads actual window geometry rather than assuming a fixed screen size
+or interpreting orientation as a fold state. The system arrangement handles active hinge
+reserved regions. A process-owned session prevents another JVM from being created when
+views or scenes change. This does not promise survival after iOS terminates the process.
+
+Physical acceptance must cover outer display, fully unfolded inner display, partially folded
+poses, landscape and portrait, larger text, and repeated transitions during an active test.
+Require usable buttons, unclipped content, no controls trapped in reserved regions,
+unchanged JVM start count, and preserved state. `layout-history.json` and `host-status.json`
+provide measurements; real-device interaction is still necessary.
 
 ## Build
 
-Requirements: an Apple Silicon Mac with Xcode's iPhoneOS SDK, JDK 27, GNU make, autoconf, XcodeGen,
-Python 3, Git, and network access to the pinned open-source dependencies.
+Use an Apple Silicon Mac with Xcode 27.1+, JDK 27, GNU make, autoconf, XcodeGen,
+Python 3, and Git. `bash scripts/build.sh` builds pinned OpenJDK Mobile source commit
+`c13417aa36f8f44755d0984b58aa735d0b41f233` and the app. The script contains the reproducible
+Zero-only changes for non-executable entry descriptors and early JAVA_HOME initialization.
+The runtime has eighteen modules; native AWT graphics are not included.
 
-The script builds matching macOS packaging tools and the iOS Zero VM from the same
-pinned OpenJDK Mobile source. It builds three native-library modules as static libraries,
-then packages eighteen Java modules, including `jdk.zipfs` for server JAR resources
-and `java.desktop` for the JavaBeans APIs used by persistence and scheduling libraries.
-Only the headless JavaBeans APIs are tested; native AWT graphics are not included.
-The first experiment failed on ELF `-soname` flags from the generic iOS `images` target.
-The second compiled the native iOS libraries successfully, but a vendor JDK's `jlink`
-rejected the target build signature. The third generated the framework and module image,
-then app linkage exposed Apple/AArch64 WX macros incorrectly enabled for the Zero port.
-The fourth and fifth builds identified additional inconsistent guards in
-`thread.inline.hpp` and `os_bsd_zero.cpp`.
-The script now excludes those JIT-specific macros for Zero and applies the same guard
-to the inline and OS definitions. The app minimum OS matches the native libraries' iOS 18.5 SDK.
-The corrected guards built the eleven-module simulator app successfully. Its real
-startup failed with `Failed setting boot class path`: JNI initializes that path before
-parsing `-Djava.home`. The current script makes iOS initialization honor the app's
-explicit `JAVA_HOME`. The next eighteen-module simulator test passed that stage but
-failed to reserve its CodeCache. The iOS Zero cache contains entry descriptors pointing
-to precompiled C++ functions, so the current patch reserves it without executable
-permission. The corrected runtime passed the native simulator test linked above.
-The harness retains application logs even if the simulator launch command times out.
-The device script also avoids empty-array expansion under macOS Bash 3.2.
-Host tools and the platform-specific native build tree are cached to shorten further experiments.
+The manual workflow uses GitHub's standard `xcode-27` runner, a 90-minute limit,
+and no scheduled runs. It reuses SHA-256-verified runtime artifacts from runs 11/12
+to avoid rebuilding unchanged native libraries. These temporary artifacts expire after
+seven days; if unavailable, rebuild from source by omitting `PROBE_RUNTIME_ARCHIVE`
+and `PROBE_RUNTIME_SHA256`. An old runtime archive alone does not provide Duo layout:
+the app is compiled and linked with the new SDK, recorded in `toolchain.json`.
 
-Selecting the manual workflow's `simulator` target builds a separate ARM64 simulator
-library and launches the app with `--probe-auto-run`. JSON results, JVM output, and a
-screenshot are retained. A simulator pass still does not establish physical-device
-signing, memory limits, performance, or game compatibility. Locally the same test uses
-`PROBE_SDK=iphonesimulator bash scripts/build.sh` from a clean build directory.
+Select `simulator` for the iPhone Duo simulator and automatic runtime checks.
+Results include a screenshot, runtime reports, window geometry, and command help.
+Simulator results do not establish physical signing, folding transitions, memory limits,
+or game performance. Select `device` for an unsigned ARM64 `RuntimeProbe.ipa`.
+Signing and installation are separate steps. No cloud game server or paid subscription is created.
 
-Run `bash scripts/build.sh` or use the included manually triggered GitHub Actions workflow.
-The workflow uses a standard macOS runner, has a 90-minute timeout, and has no scheduled runs.
-If successful, it produces an unsigned `RuntimeProbe.ipa`; signing and installation are a separate step.
-No App Store, TestFlight, Apple developer subscription, or cloud game server is created.
+## Local payload contract
 
-The first native build may reveal missing iOS APIs or static-library symbols. Such a build
-failure is an experiment result, not evidence that the phone can run AstaPS.
+The host expects `Documents/server-payload.zip` and a matching `server-payload.sha256`.
+The archive must include a reviewed Java launcher, dependency JARs, resources, and configuration.
+It is hashed before extraction. Entry paths and extracted size are bounded. After preparation,
+a matching marker reuses the existing server directory without replacing its saved database.
+The launcher is loaded with an isolated URLClassLoader in the existing Zero JVM.
+Neither native dynamic code nor JIT entitlement is needed for this experiment.
 
-## On-device acceptance
-
-1. Install the signed test IPA on the target phone.
-2. Keep the app in the foreground and tap Run.
-3. Export `runtime-probe.json` and `jvm-output.log` through Files.
-4. Require successful module loading, JavaBeans introspection, timers, file I/O, JAR filesystems, threads, reflection, TCP/UDP loopback, RSA, XML, and management APIs.
-5. Only then integrate the actual embedded server payload and measure memory/performance.
-
-A foreground server test still does not solve native Genshin client compatibility or same-process
-integration. The final game must remain usable when the user's computer is off.
+Keep the app in the foreground and select one test per launch. Runtime reports and logs are
+available through app document sharing. Server tests also record loopback HTTP readiness,
+resident footprint, elapsed time, and JVM start count. A foreground server test does not solve
+the need to run the game and server together when the computer is off.
 
 ## References
 
 - https://github.com/openjdk/mobile
-- https://github.com/openjdk-mobile/ios-tools
 - https://openjdk-mobile.github.io/ios/helloworld/
+- https://developer.apple.com/iphone-duo/prepare/
+- https://developer.apple.com/videos/play/tech-talks/111463/
 
-OpenJDK carries GPLv2 with the Classpath Exception; preserve its accompanying license files when distributing binaries.
+OpenJDK carries GPLv2 with the Classpath Exception. Preserve its license files with binaries.
