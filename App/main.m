@@ -215,9 +215,10 @@ static BOOL ChecksumBenchmark(JNIEnv *env, jclass cls) {
                 [@"-Djava.class.path=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"DeviceProbe.jar"]],
                 [@"-Duser.dir=" stringByAppendingString:working], @"-Djava.awt.headless=true", @"-Xint",
                 server ? @"-Xmx2048m" : @"-Xmx256m", @"-Dfile.encoding=UTF-8",
-                @"-Dlogback.configurationFile=prototype-logback.xml", @"-Diphone.prototype.verify=true"
+                @"-Dlogback.configurationFile=prototype-logback.xml", @"-Diphone.prototype.verify=true",
+                [@"--patch-module=java.base=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"RuntimePatch.jar"]]
             ];
-            JavaVMOption options[9] = {0};
+            JavaVMOption options[10] = {0};
             for (NSUInteger i = 0; i < arguments.count; i++) options[i].optionString = strdup(arguments[i].UTF8String);
             JavaVMInitArgs settings = {0}; settings.version = JNI_VERSION_1_8;
             settings.nOptions = (jint)arguments.count; settings.options = options; settings.ignoreUnrecognized = JNI_FALSE;
@@ -299,7 +300,7 @@ static BOOL ChecksumBenchmark(JNIEnv *env, jclass cls) {
     [super viewDidLoad]; self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
     UIScrollView *scroll = [UIScrollView new]; scroll.translatesAutoresizingMaskIntoConstraints = NO; [self.view addSubview:scroll];
     UILabel *title = [self label:@"本机运行测试" style:UIFontTextStyleLargeTitle];
-    UILabel *subtitle = [self label:@"iPhone 运行验证 · 0.3" style:UIFontTextStyleSubheadline]; subtitle.textColor = UIColor.secondaryLabelColor;
+    UILabel *subtitle = [self label:@"iPhone 运行验证 · 0.4" style:UIFontTextStyleSubheadline]; subtitle.textColor = UIColor.secondaryLabelColor;
     self.statusLabel = [self label:@"" style:UIFontTextStyleTitle2]; self.detailLabel = [self label:@"" style:UIFontTextStyleBody];
     self.probeButton = [self button:@"检查运行环境" action:@selector(runProbe) prominent:NO];
     self.serverButton = [self button:@"测试本机服务端" action:@selector(runServer) prominent:YES];
