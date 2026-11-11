@@ -291,6 +291,14 @@ xcrun --sdk "$sdk_name" clang -dynamiclib -target "$host_target" -isysroot "$(xc
   -Wl,-all_load "$kit/libRuntimeHostKit.a" "$framework_library" \
   -framework UIKit -framework Foundation -framework BackgroundTasks -lc++ -lz \
   -install_name @loader_path/RuntimeHost.dylib -o "$kit/RuntimeHost.dylib"
+# The image-local loader shim must never become a process-visible replacement.
+xcrun nm -gU "$kit/RuntimeHost.dylib" > "$kit/dynamic-exports.txt"
+python3 - <<'PY'
+from pathlib import Path
+symbols=Path('build/RuntimeHostKit/dynamic-exports.txt').read_text().splitlines()
+assert not any(line.rstrip().endswith(' _dlopen') for line in symbols), 'Host loader shim escaped local image'
+assert any(line.rstrip().endswith(' _JNI_OnLoad_java') for line in symbols)
+PY
 xcrun --sdk "$sdk_name" clang -dynamiclib -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
   -fobjc-arc -fmodules -O2 -DRP_CLIENT_OBSERVER_ONLY=1 App/main.m "$kit/RuntimeHost.dylib" \
   -framework UIKit -framework Foundation -install_name @executable_path/Frameworks/RuntimeClientProbe.dylib \
@@ -440,7 +448,7 @@ try:
         command('xcrun','simctl','install',udid,'build/'+variant+'.app')
         fixture_container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,bundle,'data').stdout.strip())
         fixture_containers[variant]=fixture_container
-        for old in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/host-status.json']:
+        for old in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/host-status.json','EmbeddedRuntime/native-lookup.json']:
             stale=fixture_container/'Documents'/old
             if stale.is_file(): stale.unlink()
         command('xcrun','simctl','launch','--terminate-running-process',udid,bundle,*arguments,timeout=60)
@@ -486,7 +494,7 @@ except Exception as failure:
     result={'passed':False,'error':repr(failure)}
 finally:
     for variant,fixture_container in fixture_containers.items():
-        for relative in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/host-status.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/jvm-output.log']:
+        for relative in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/host-status.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/jvm-output.log','EmbeddedRuntime/native-lookup.json']:
             source=fixture_container/'Documents'/relative
             if source.is_file(): shutil.copy2(source,output/(variant+'-'+source.name))
     crash_directory=pathlib.Path.home()/'Library/Logs/DiagnosticReports'
