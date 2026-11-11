@@ -47,12 +47,14 @@
         @autoreleasepool {
             NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
             NSString *bundle = NSBundle.mainBundle.resourcePath;
+            NSString *runtimeHome = [bundle stringByAppendingPathComponent:@"runtime"];
+            setenv("JAVA_HOME",runtimeHome.fileSystemRepresentation,1);
             chdir(documents.fileSystemRepresentation);
             NSString *log = [documents stringByAppendingPathComponent:@"jvm-output.log"];
             freopen(log.fileSystemRepresentation,"a",stdout);
             freopen(log.fileSystemRepresentation,"a",stderr);
             NSArray<NSString*> *arguments = @[
-              [@"-Djava.home=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"runtime"]],
+              [@"-Djava.home=" stringByAppendingString:runtimeHome],
               [@"-Djava.class.path=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"DeviceProbe.jar"]],
               [@"-Duser.dir=" stringByAppendingString:documents], @"-Djava.awt.headless=true", @"-Xint", @"-Xmx256m"
             ];
