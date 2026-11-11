@@ -136,8 +136,31 @@ public final class DeviceProbe {
             throw failure;
         }
     }
+    private static int legacyValue(boolean valid) throws Exception {
+        byte[] bytes = Base64.getDecoder().decode("yv66vgAAADEADwoAAgADBwAEDAAFAAYBABBqYXZhL2xhbmcvT2JqZWN0AQAGPGluaXQ+AQADKClWBwAIAQAVTGVnYWN5VmVyaWZpZXJGaXh0dXJlAQAEQ29kZQEAD0xpbmVOdW1iZXJUYWJsZQEABXZhbHVlAQADKClJAQAKU291cmNlRmlsZQEAGkxlZ2FjeVZlcmlmaWVyRml4dHVyZS5qYXZhACEABwACAAAAAAACAAEABQAGAAEACQAAAB0AAQABAAAABSq3AAGxAAAAAQAKAAAABgABAAAAAQAJAAsADAABAAkAAAAbAAEAAAAAAAMQB6wAAAABAAoAAAAGAAEAAAABAAEADQAAAAIADg==");
+        if (!valid) {
+            for (int i = 0; i < bytes.length - 2; i++) {
+                if (bytes[i] == 0x10 && bytes[i+1] == 7 && (bytes[i+2] & 255) == 0xac) {
+                    bytes[i+2] = (byte)0xb0; break; // areturn is invalid for a primitive int result.
+                }
+            }
+        }
+        class FixtureLoader extends ClassLoader {
+            Class<?> loadFixture(byte[] data) { return defineClass(null, data, 0, data.length); }
+        }
+        return (Integer)new FixtureLoader().loadFixture(bytes).getMethod("value").invoke(null);
+    }
     public static void run() throws Exception {
         results.clear();
+        check("legacy_bytecode_verifier", () -> {
+            if (legacyValue(true) != 7) throw new IOException("Legacy bytecode result mismatch");
+        });
+        check("invalid_legacy_bytecode_rejected", () -> {
+            try { legacyValue(false); throw new IOException("Invalid bytecode was accepted"); }
+            catch (VerifyError rejected) {
+                if (String.valueOf(rejected.getMessage()).contains("Could not link verifier")) throw rejected;
+            }
+        });
         check("required_modules", () -> {
             for (String name : new String[]{"java.lang.management.ManagementFactory", "javax.management.MBeanServer",
                  "java.sql.SQLException", "javax.naming.Context", "javax.xml.parsers.DocumentBuilderFactory", "sun.misc.Unsafe",
