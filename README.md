@@ -18,7 +18,9 @@ Python 3, Git, and network access to the pinned open-source dependencies.
 
 The script builds matching macOS packaging tools and the iOS Zero VM from the same
 pinned OpenJDK Mobile source. It builds three native-library modules as static libraries,
-then packages eleven Java modules, including `jdk.zipfs` for server JAR resources.
+then packages eighteen Java modules, including `jdk.zipfs` for server JAR resources
+and `java.desktop` for the JavaBeans APIs used by persistence and scheduling libraries.
+Only the headless JavaBeans APIs are tested; native AWT graphics are not included.
 The first experiment failed on ELF `-soname` flags from the generic iOS `images` target.
 The second compiled the native iOS libraries successfully, but a vendor JDK's `jlink`
 rejected the target build signature. The third generated the framework and module image,
@@ -27,7 +29,9 @@ The fourth and fifth builds identified additional inconsistent guards in
 `thread.inline.hpp` and `os_bsd_zero.cpp`.
 The script now excludes those JIT-specific macros for Zero and applies the same guard
 to the inline and OS definitions. The app minimum OS matches the native libraries' iOS 18.5 SDK.
-These changes still await a successful application build and runtime test.
+The corrected guards compiled the eleven-module simulator runtime successfully.
+The eighteen-module app and runtime checks still require a successful native test.
+The device script also avoids empty-array expansion under macOS Bash 3.2.
 Completed host tools are cached to avoid repeating their build during further experiments.
 
 Selecting the manual workflow's `simulator` target builds a separate ARM64 simulator
@@ -49,7 +53,7 @@ failure is an experiment result, not evidence that the phone can run AstaPS.
 1. Install the signed test IPA on the target phone.
 2. Keep the app in the foreground and tap Run.
 3. Export `runtime-probe.json` and `jvm-output.log` through Files.
-4. Require successful file I/O, JAR filesystems, threads, reflection, TCP/UDP loopback, RSA, XML, and management APIs.
+4. Require successful module loading, JavaBeans introspection, timers, file I/O, JAR filesystems, threads, reflection, TCP/UDP loopback, RSA, XML, and management APIs.
 5. Only then integrate the actual embedded server payload and measure memory/performance.
 
 A foreground server test still does not solve native Genshin client compatibility or same-process
