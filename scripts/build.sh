@@ -24,6 +24,24 @@ if [[ ! -d build/mobile/.git ]]; then
 fi
 test "$(git -C build/mobile rev-parse HEAD)" = "$mobile_commit"
 python3 - <<'PY'
+from pathlib import Path
+# Zero selects bsd_zero, so it cannot reference WX helpers implemented only in
+# bsd_aarch64. It interprets bytecode and does not generate executable JIT pages.
+p=Path('build/mobile/src/hotspot/share/utilities/macros.hpp')
+s=p.read_text()
+before='''#define MACOS_AARCH64_ONLY(x) MACOS_ONLY(AARCH64_ONLY(x))
+#if defined(__APPLE__) && defined(AARCH64)
+#define MACOS_AARCH64 1'''
+after='''#define MACOS_AARCH64_ONLY(x) NOT_ZERO(MACOS_ONLY(AARCH64_ONLY(x)))
+#if defined(__APPLE__) && defined(AARCH64) && !defined(ZERO)
+#define MACOS_AARCH64 1'''
+if before in s:
+    assert s.count(before)==1
+    p.write_text(s.replace(before,after))
+else:
+    assert after in s, 'Unexpected upstream WX macro layout'
+PY
+python3 - <<'PY'
 import hashlib,pathlib,urllib.request,zipfile
 p=pathlib.Path('build/libffi-ios.zip')
 if not p.exists():
@@ -41,10 +59,12 @@ cd build/mobile
 # The packaging tools must use the same java.base build signature and iOS-aware
 # platform enum as the target. A vendor JDK of the same feature version is insufficient.
 version_options=( --with-version-opt=iphone-probe --with-vendor-name=OpenJDKMobileProbe )
+host_jdk="$project_root/build/mobile/build/macos-aarch64-server-release/images/jdk"
+if [[ ! -x "$host_jdk/bin/jlink" ]]; then
 bash configure --with-conf-name=macos-aarch64-server-release --disable-warnings-as-errors \
   --with-jvm-variants=server --with-sysroot="$mac_sdk_root" "${version_options[@]}"
 gmake CONF=macos-aarch64-server-release images
-host_jdk="$project_root/build/mobile/build/macos-aarch64-server-release/images/jdk"
+fi
 test -x "$host_jdk/bin/jmod" && test -x "$host_jdk/bin/jlink"
 "$host_jdk/bin/java" -version
 bash configure --with-conf-name=ios-aarch64-zero-release --disable-warnings-as-errors \
@@ -105,6 +125,7 @@ for filename in ['conf/security/java.security','lib/tzdb.dat','lib/modules']:
 for filename in ['LICENSE','ASSEMBLY_EXCEPTION']:
     shutil.copy2(pathlib.Path('build/mobile')/filename,image/filename)
 (image/'SOURCE.txt').write_text('OpenJDK Mobile source: https://github.com/openjdk/mobile/tree/c13417aa36f8f44755d0984b58aa735d0b41f233\n')
+(image/'LOCAL-PATCHES.txt').write_text('Guard MACOS_AARCH64 and MACOS_AARCH64_ONLY against ZERO to avoid references to unavailable JIT WX helpers.\nReproducible patch: https://github.com/lxingy3/iphone-java-runtime-probe/blob/main/scripts/build.sh\n')
 PY
 libraries=( "$device_root/hotspot/variant-zero/libjvm/objs/static/libjvm.a" "$support_root/libffi.a" )
 for entry in java.base/java java.base/zip java.base/net java.base/nio java.base/jimage java.management/management jdk.management/management_ext; do
