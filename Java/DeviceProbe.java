@@ -188,6 +188,20 @@ public final class DeviceProbe {
             Files.writeString(file,value);
             if (!Files.readString(file).equals(value)) throw new IOException("File round-trip changed");
         });
+        check("file_watch_service", () -> {
+            Path directory = Files.createTempDirectory("probe-watch-");
+            try (var watcher = FileSystems.getDefault().newWatchService()) {
+                directory.register(watcher, java.nio.file.StandardWatchEventKinds.ENTRY_CREATE);
+                Files.writeString(directory.resolve("event.txt"), "watch-ok");
+                var key = watcher.poll(10, TimeUnit.SECONDS);
+                if (key == null || key.pollEvents().stream().noneMatch(event ->
+                    event.kind() == java.nio.file.StandardWatchEventKinds.ENTRY_CREATE &&
+                    Path.of("event.txt").equals(event.context()))) throw new IOException("File notification missing");
+            } finally {
+                Files.deleteIfExists(directory.resolve("event.txt"));
+                Files.deleteIfExists(directory);
+            }
+        });
         check("jar_filesystem", () -> {
             Path archive=Path.of("probe-resource.zip").toAbsolutePath();
             try(var output=new java.util.zip.ZipOutputStream(Files.newOutputStream(archive))) {
