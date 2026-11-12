@@ -235,6 +235,13 @@ static BOOL RPCVendorHost(NSString *host) {
         if ([host isEqualToString:domain] || [host hasSuffix:[@"." stringByAppendingString:domain]]) return YES;
     return NO;
 }
+static NSString *RPCConfiguredRegionPath(void) {
+    id name = RPCConfiguration[@"LocalRegionName"];
+    if (![name isKindOfClass:NSString.class] || ![name length] || [name length] > 64) return nil;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"];
+    if ([name rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return nil;
+    return [@"/query_cur_region/" stringByAppendingString:name];
+}
 static NSSet *RPCRoutePaths(void) {
     static NSSet *paths; static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -257,21 +264,37 @@ static void RPCObserveURL(NSURL *url) {
         NSString *host = url.host.lowercaseString ?: @"";
         NSString *path = url.path ?: @"";
         // Exact paths only: never persist arbitrary URLs, query strings, headers or bodies.
-        if (RPCVendorHost(host) && [RPCRoutePaths() containsObject:path])
+        BOOL passportPath = [path hasPrefix:@"/account/ma-cn-passport/"] && path.length <= 160;
+        if (RPCVendorHost(host) && ([RPCRoutePaths() containsObject:path] || passportPath))
             RPCRecord(@"url_constructed", @{@"host":host,@"path":path});
     } @finally { RPCRecordingURL = NO; }
 }
 static NSURL *RPCRewriteURL(NSURL *url) {
     if (!RPCLocalRoutingEnabled || RPCRoutingURL || ![url isKindOfClass:NSURL.class]) return url;
-    if (!RPCVendorHost(url.host) || ![RPCRoutePaths() containsObject:url.path]) return url;
+    BOOL localBareRegion = [url.host isEqual:@"127.0.0.1"] && [url.port isEqual:@8088] &&
+        [url.scheme.lowercaseString isEqual:@"http"] && [url.path isEqual:@"/query_cur_region"];
+    if ((!RPCVendorHost(url.host) && !localBareRegion) || ![RPCRoutePaths() containsObject:url.path]) return url;
     NSString *scheme = url.scheme.lowercaseString;
     if (![@[@"https",@"http"] containsObject:scheme] || url.user.length || url.password.length ||
-        (url.port && ![@[@80,@443] containsObject:url.port])) return url;
+        (!localBareRegion && url.port && ![@[@80,@443] containsObject:url.port])) return url;
     RPCRoutingURL = YES;
     @try {
         NSURLComponents *parts = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:YES];
-        // Preserve the encoded path/query byte representation. Resource/CDN URLs never match.
+        // A configured local region replaces only the bare dispatch path. Preserve
+        // the encoded query exactly; unrelated paths and resource/CDN URLs never match.
         parts.scheme = @"http"; parts.host = @"127.0.0.1"; parts.port = @8088;
+        NSString *regionPath = RPCConfiguredRegionPath();
+        if ([url.path isEqual:@"/query_cur_region"] && regionPath) {
+            parts.path = regionPath;
+            NSMutableDictionary *fields = [@{@"path":url.path,@"mapped_path":regionPath} mutableCopy];
+            for (NSURLQueryItem *item in parts.queryItems) {
+                if ([item.name isEqual:@"dispatchSeed"]) fields[@"dispatch_seed_present"] = @YES;
+                else if ([@[@"version",@"key_id",@"platform"] containsObject:item.name] && item.value.length <= 80 &&
+                         [item.value rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"].invertedSet].location == NSNotFound)
+                    fields[item.name] = item.value;
+            }
+            RPCRecord(@"local_region_path_selected",fields);
+        }
         NSURL *result = parts.URL;
         if (result) RPCRecord(@"url_routed_to_loopback", @{@"host":url.host.lowercaseString,@"path":url.path,@"port":@8088});
         return result ?: url;
@@ -437,7 +460,7 @@ static NSURLRequest *RPCRewriteRequest(NSURLRequest *request) {
 typedef void (^RPCCompletion)(NSData *, NSURLResponse *, NSError *);
 static RPCCompletion RPCResponseAudit(NSURL *url, RPCCompletion completion) {
     if (!completion || !RPCLocalRoutingEnabled || ![url.host isEqual:@"127.0.0.1"] ||
-        ![url.port isEqual:@8088] || ![RPCRoutePaths() containsObject:url.path]) return completion;
+        ![url.port isEqual:@8088] || (![RPCRoutePaths() containsObject:url.path] && ![url.path isEqual:RPCConfiguredRegionPath()])) return completion;
     NSString *path = url.path;
     return ^(NSData *data, NSURLResponse *response, NSError *error) {
         NSMutableDictionary *details = [@{@"path":path,@"error_code":@(error.code)} mutableCopy];
