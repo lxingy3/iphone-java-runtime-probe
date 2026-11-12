@@ -1,3 +1,14 @@
+#include <sys/stat.h>
+
+// Compare filesystem identity, since aliases such as /var and /private/var
+// can name the same directory. A genuinely changed cwd must still be rejected.
+static int RPDirectoriesMatch(const char *left, const char *right) {
+    struct stat a, b;
+    return left && right && stat(left, &a) == 0 && stat(right, &b) == 0 &&
+        S_ISDIR(a.st_mode) && S_ISDIR(b.st_mode) &&
+        a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+}
+
 #if defined(RP_CLIENT_FIXTURE)
 // Simulator-only host for the optional observer. No game code or real account data.
 #import <UIKit/UIKit.h>
@@ -300,7 +311,10 @@ static void RPCLaunched(void) {
     NSError *error = nil;
     NSString *resources = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"LocalRuntime"];
     RPCHostStarted = RPHostStart(RPCServerDirectory,resources,YES,&error);
-    RPCRecord(@"host_bootstrap", @{@"accepted":@(RPCHostStarted),@"error":error.localizedDescription ?: @""});
+    RPCRecord(@"host_bootstrap", @{@"accepted":@(RPCHostStarted),@"error":error.localizedDescription ?: @"",
+        @"current_directory":NSFileManager.defaultManager.currentDirectoryPath ?: @"",
+        @"expected_directory":[RPCServerDirectory stringByAppendingPathComponent:@"server"],
+        @"directory_identity_matches":@(RPDirectoriesMatch(".", [RPCServerDirectory stringByAppendingPathComponent:@"server"].fileSystemRepresentation))});
     if (RPCHostStarted) [NSTimer scheduledTimerWithTimeInterval:5 repeats:YES block:^(NSTimer *timer) {
         NSDictionary *snapshot = RPHostSnapshot();
         dispatch_async(RPCReportQueue, ^{ RPCWrite(@"embedded-host.json",snapshot); });
@@ -344,7 +358,10 @@ __attribute__((constructor)) static void RPCInitialize(void) {
             NSString *working = [RPCServerDirectory stringByAppendingPathComponent:@"server"];
             [NSFileManager.defaultManager createDirectoryAtPath:working withIntermediateDirectories:YES attributes:nil error:nil];
             RPCPreparedServer = chdir(working.fileSystemRepresentation) == 0;
-            RPCRecord(@"prelaunch_server_directory", @{@"prepared":@(RPCPreparedServer)});
+            RPCRecord(@"prelaunch_server_directory", @{@"prepared":@(RPCPreparedServer),
+                @"current_directory":NSFileManager.defaultManager.currentDirectoryPath ?: @"",
+                @"expected_directory":working,
+                @"directory_identity_matches":@(RPDirectoriesMatch(".", working.fileSystemRepresentation))});
         }
         [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil
             queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) {
@@ -883,8 +900,8 @@ __attribute__((visibility("default"))) BOOL RPHostStart(NSString *documents, NSS
     NSString *reason = nil;
     if (RuntimeSession.shared.started) reason = @"This process already owns a JVM; restart the containing app to change modes.";
     else if (!documents.isAbsolutePath || !resources.isAbsolutePath) reason = @"The host must supply absolute private storage and resource paths.";
-    else if (server && ![NSFileManager.defaultManager.currentDirectoryPath isEqualToString:[documents stringByAppendingPathComponent:@"server"]])
-        reason = @"This server payload still uses relative java.io paths. The host must establish the server working directory before initializing either engine; arbitrary injection is not supported.";
+    else if (server && !RPDirectoriesMatch(".", [documents stringByAppendingPathComponent:@"server"].fileSystemRepresentation))
+        reason = @"The process working directory differs from the prepared server directory. Relative java.io paths require the same filesystem directory; no working-directory change was made.";
     if (reason) { if (error) *error = [NSError errorWithDomain:@"RuntimeHostKit" code:1 userInfo:@{NSLocalizedDescriptionKey:reason}]; return NO; }
     RPHostDocuments = documents.copy; RPHostResources = resources.copy; RPEmbeddedHost = YES;
     if (![NSFileManager.defaultManager createDirectoryAtPath:documents withIntermediateDirectories:YES attributes:nil error:error]) return NO;
