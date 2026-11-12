@@ -12,6 +12,46 @@ project_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$project_root"
 mkdir -p build
 exec > >(tee build/build.log) 2>&1
+# Exercise the exact guard used by the embedding API before building the app.
+python3 - <<'PY'
+import json,pathlib,re,subprocess
+source=pathlib.Path('App/main.m').read_text()
+guard=re.search(r'static int RPDirectoriesMatch\(.*?\n\}',source,re.S).group(0)
+test=r'''
+#include <assert.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+GUARD
+int main(void) {
+    char root[]="/tmp/runtime-directory-XXXXXX", old[PATH_MAX], actual[PATH_MAX];
+    char real[PATH_MAX], alias[PATH_MAX], other[PATH_MAX], file[PATH_MAX], missing[PATH_MAX];
+    assert(getcwd(old,sizeof(old)) && mkdtemp(root));
+    snprintf(real,sizeof(real),"%s/real",root); snprintf(alias,sizeof(alias),"%s/alias",root);
+    snprintf(other,sizeof(other),"%s/other",root); snprintf(file,sizeof(file),"%s/file",root);
+    snprintf(missing,sizeof(missing),"%s/missing",root);
+    assert(mkdir(real,0700)==0 && mkdir(other,0700)==0 && symlink(real,alias)==0);
+    FILE *f=fopen(file,"w"); assert(f); fclose(f);
+    assert(chdir(alias)==0 && getcwd(actual,sizeof(actual)));
+    assert(strcmp(actual,alias)!=0); // Reproduces the old text-comparison rejection.
+    assert(RPDirectoriesMatch(".",alias));
+    assert(RPDirectoriesMatch(real,alias));
+    assert(!RPDirectoriesMatch(".",other));
+    assert(!RPDirectoriesMatch(".",missing));
+    assert(!RPDirectoriesMatch(file,file));
+    assert(chdir(old)==0);
+    assert(unlink(alias)==0 && unlink(file)==0 && rmdir(real)==0 && rmdir(other)==0 && rmdir(root)==0);
+    puts("directory identity regression: PASS (alias, changed directory, missing path, regular file)");
+}
+'''.replace('GUARD',guard)
+pathlib.Path('build/directory-identity-test.c').write_text(test)
+subprocess.run(['xcrun','clang','-Wall','-Wextra','-Werror','build/directory-identity-test.c','-o','build/directory-identity-test'],check=True)
+subprocess.run(['build/directory-identity-test'],check=True)
+pathlib.Path('build/directory-identity-test.json').write_text(json.dumps({'passed':True,'legacy_alias_rejection_reproduced':True,'same_directory_alias_accepted':True,'different_directory_rejected':True,'missing_path_rejected':True,'regular_file_rejected':True,'actual_game_tested':False},indent=2))
+PY
 sdk_name="${PROBE_SDK:-iphoneos}"
 # macOS ships Bash 3.2, whose nounset handling rejects empty array expansion.
 extra_target_flags=( --disable-warnings-as-errors )
