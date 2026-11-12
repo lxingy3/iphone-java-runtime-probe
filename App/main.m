@@ -7,6 +7,26 @@
 extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
 extern NSDictionary *RPHostSnapshot(void);
 
+static void RPCFixtureHTTP(NSURL *url, NSString *documents) {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"POST";
+    request.HTTPBody = [@"{\"fixture\":\"not-an-account\",\"nonce\":\"routing-test\"}" dataUsingEncoding:NSUTF8StringEncoding];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    configuration.timeoutIntervalForRequest = 8;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration];
+    [[session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSDictionary *result = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        BOOL passed = !error && [(NSHTTPURLResponse *)response statusCode] == 200 && [result[@"passed"] isEqual:@YES];
+        NSDictionary *report = @{@"passed":@(passed),@"http_status":@([(NSHTTPURLResponse *)response statusCode]),
+            @"error_code":@(error.code),@"method_body_query_verified_by_mock":@([result[@"passed"] isEqual:@YES]),
+            @"actual_game_tested":@NO};
+        [[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil]
+            writeToFile:[documents stringByAppendingPathComponent:@"routing-http-fixture.json"] atomically:YES];
+        [session finishTasksAndInvalidate];
+    }] resume];
+}
+
 @interface MiHoYoRSAEncryptor : NSObject
 + (NSString *)encryptString:(NSString *)input publicKey:(NSString *)key;
 + (NSData *)encryptData:(NSData *)input publicKey:(NSString *)key;
@@ -30,6 +50,7 @@ extern NSDictionary *RPHostSnapshot(void);
     [self.window makeKeyAndVisible];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(), ^{
         BOOL disabled = [NSProcessInfo.processInfo.arguments containsObject:@"--expect-observer-disabled"];
+        BOOL routing = [NSProcessInfo.processInfo.arguments containsObject:@"--expect-local-routing"];
         NSString *sensitive = @"FIXTURE_INPUT_NEVER_RECORD";
         NSString *key = @"FIXTURE_PUBLIC_KEY_HASH_ONLY";
         NSData *input = [sensitive dataUsingEncoding:NSUTF8StringEncoding];
@@ -42,7 +63,21 @@ extern NSDictionary *RPHostSnapshot(void);
         NSMutableDictionary *checks = [@{@"string_passthrough":@([encrypted isEqualToString:[@"original:" stringByAppendingString:sensitive]]),
             @"data_passthrough":@([encryptedData isEqualToData:input]),
             @"url_query_preserved":@([login.query containsString:sensitive]),
-            @"dispatch_url_preserved":@([dispatch.host isEqualToString:@"dispatchcnglobal.yuanshen.com"])} mutableCopy];
+            @"login_destination_correct":@([login.host isEqualToString:(routing ? @"127.0.0.1" : @"hk4e-sdk.mihoyo.com")]),
+            @"dispatch_destination_correct":@([dispatch.host isEqualToString:(routing ? @"127.0.0.1" : @"dispatchcnglobal.yuanshen.com")])} mutableCopy];
+        if (routing) {
+            checks[@"login_routes_to_loopback"] = @([login.host isEqual:@"127.0.0.1"] && [login.port isEqual:@8088] && [login.scheme isEqual:@"http"]);
+            checks[@"dispatch_routes_to_loopback"] = @([dispatch.host isEqual:@"127.0.0.1"] && [dispatch.port isEqual:@8088]);
+            NSURL *relative = [NSURL URLWithString:@"/query_cur_region?encoded=a%2Bb%2Fc%25" relativeToURL:[NSURL URLWithString:@"https://dispatchcnglobal.yuanshen.com/"]];
+            checks[@"relative_url_routes_with_encoding_preserved"] = @([relative.absoluteString isEqual:@"http://127.0.0.1:8088/query_cur_region?encoded=a%2Bb%2Fc%25"]);
+            BOOL untouched = YES;
+            for (NSString *negative in @[@"https://mihoyo.com.evil.test/query_region_list",@"https://example.test/query_region_list",
+                @"https://autopatchcn.yuanshen.com/client/data.zip",@"https://hk4e-sdk.mihoyo.com/private-account-path",
+                @"ftp://dispatchcnglobal.yuanshen.com/query_region_list",@"https://dispatchcnglobal.yuanshen.com:444/query_region_list",
+                @"https://fixture:fixture@dispatchcnglobal.yuanshen.com/query_region_list",@"http://127.0.0.1:8088/query_region_list"])
+                untouched &= [[NSURL URLWithString:negative].absoluteString isEqual:negative];
+            checks[@"unrelated_resource_and_unsupported_urls_unchanged"] = @(untouched);
+        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(), ^{
             NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
             NSString *path = [documents stringByAppendingPathComponent:@"RuntimeIntegration/client-observations.json"];
@@ -64,7 +99,10 @@ extern NSDictionary *RPHostSnapshot(void);
                 checks[@"dynamic_library_loaded"] = @(loaded);
                 checks[@"launch_observed_without_server_start"] = @(launched);
                 checks[@"objc_observers_registered"] = @(registered);
-                checks[@"allowed_urls_only"] = @(urls.count == 2 && [urls[0][@"path"] isEqual:@"/hk4e_cn/mdk/shield/api/login"] && [urls[1][@"path"] isEqual:@"/query_region_list"]);
+                NSSet *observedPaths = [NSSet setWithArray:[urls valueForKey:@"path"]];
+                checks[@"allowed_urls_only"] = @((routing ? urls.count >= 2 : urls.count == 2) &&
+                    [observedPaths containsObject:@"/hk4e_cn/mdk/shield/api/login"] && [observedPaths containsObject:@"/query_region_list"]);
+                checks[@"routing_requires_opt_in"] = @([report[@"local_routing_enabled"] boolValue] == routing);
                 checks[@"public_key_fingerprints_only"] = @(keys == 2 && ![raw containsString:key]);
                 checks[@"no_sensitive_input_or_query"] = @(![raw containsString:sensitive] && ![raw containsString:@"token="] && ![raw containsString:@"version=fixture"]);
                 checks[@"no_disallowed_hosts_or_paths"] = @(![raw containsString:@"untrusted.example"] && ![raw containsString:@"private-account-path"]);
@@ -76,6 +114,7 @@ extern NSDictionary *RPHostSnapshot(void);
             [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil]
                 writeToFile:[documents stringByAppendingPathComponent:@"observer-fixture.json"] atomically:YES];
             label.text = passed ? @"Observer fixture passed" : @"Observer fixture failed";
+            if (passed && routing) RPCFixtureHTTP([NSURL URLWithString:@"https://hk4e-sdk.mihoyo.com/hk4e_cn/mdk/shield/api/login?token=FIXTURE_INPUT_NEVER_RECORD&encoded=a%2Bb%2Fc%25"],documents);
             if (passed && [NSProcessInfo.processInfo.arguments containsObject:@"--probe-embedded-runtime"]) {
                 // The host-local shim must not change the containing app's loader.
                 void *mainHandle = dlopen(NULL, RTLD_FIRST);
@@ -124,7 +163,7 @@ extern NSDictionary *RPHostSnapshot(void);
 int main(int argc,char **argv) { @autoreleasepool { return UIApplicationMain(argc,argv,nil,NSStringFromClass(RPCFixtureDelegate.class)); } }
 #elif defined(RP_CLIENT_OBSERVER_ONLY)
 // Optional local-only instrumentation for an explicitly configured, separately
-// installed host. It does not redirect traffic or change cryptographic results.
+// installed host. Loopback routing requires a separate explicit opt-in.
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
@@ -143,8 +182,11 @@ static NSMutableArray *RPCEvents;
 static NSMutableSet *RPCSeen;
 static BOOL RPCPreparedServer;
 static BOOL RPCHostStarted;
+static BOOL RPCLocalRoutingEnabled;
 static __thread BOOL RPCRecordingURL;
+static __thread BOOL RPCRoutingURL;
 static IMP RPCOriginalURL;
+static IMP RPCOriginalRelativeURL;
 static IMP RPCOriginalRSAString;
 static IMP RPCOriginalRSAData;
 
@@ -163,9 +205,30 @@ static void RPCRecord(NSString *event, NSDictionary *details) {
         item[@"event"] = event; item[@"time"] = @([NSDate.date timeIntervalSince1970]);
         [RPCEvents addObject:item];
         RPCWrite(@"client-observations.json", @{@"schema":@1,@"pid":@(getpid()),@"events":RPCEvents,
-            @"request_bodies_recorded":@NO,@"credentials_recorded":@NO,@"traffic_redirected":@NO,
+            @"request_bodies_recorded":@NO,@"credentials_recorded":@NO,@"local_routing_enabled":@(RPCLocalRoutingEnabled),
             @"native_game_login_verified":@NO});
     });
+}
+static BOOL RPCVendorHost(NSString *host) {
+    host = host.lowercaseString;
+    for (NSString *domain in @[@"mihoyo.com",@"hoyoverse.com",@"yuanshen.com"])
+        if ([host isEqualToString:domain] || [host hasSuffix:[@"." stringByAppendingString:domain]]) return YES;
+    return NO;
+}
+static NSSet *RPCRoutePaths(void) {
+    static NSSet *paths; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableSet *values = [NSMutableSet setWithArray:@[@"/query_region_list",@"/query_cur_region",@"/query_cur_region/dispatch",
+            @"/account/risky/api/check",@"/account/ma-cn-passport/app/loginByPassword",@"/account/ma-cn-passport/token/verifySToken",
+            @"/combo/box/api/config/sdk/combo",@"/combo/box/api/config/sw/precache",@"/device-fp/api/getExtList"]];
+        for (NSString *game in @[@"hk4e_cn",@"hk4e_global"])
+            for (NSString *suffix in @[@"mdk/shield/api/login",@"mdk/shield/api/verify",@"mdk/shield/api/loadConfig",
+                @"combo/granter/login/v2/login",@"combo/granter/api/getConfig",@"combo/granter/api/compareProtocolVersion",
+                @"account/ma-passport/api/getConfig",@"account/ma-passport/api/appLoginByPassword",@"account/ma-passport/token/verifySToken"])
+                [values addObject:[NSString stringWithFormat:@"/%@/%@",game,suffix]];
+        paths = [values copy];
+    });
+    return paths;
 }
 static void RPCObserveURL(NSURL *url) {
     if (RPCRecordingURL || ![url isKindOfClass:NSURL.class]) return;
@@ -174,21 +237,33 @@ static void RPCObserveURL(NSURL *url) {
         NSString *host = url.host.lowercaseString ?: @"";
         NSString *path = url.path ?: @"";
         // Exact paths only: never persist arbitrary URLs, query strings, headers or bodies.
-        NSArray *paths = @[@"/query_region_list",@"/query_cur_region",@"/query_cur_region/dispatch",
-            @"/hk4e_cn/mdk/shield/api/login",@"/hk4e_cn/mdk/shield/api/verify",
-            @"/hk4e_cn/combo/granter/login/v2/login",@"/hk4e_cn/combo/granter/api/getConfig",
-            @"/hk4e_cn/mdk/shield/api/loadConfig",@"/hk4e_global/mdk/shield/api/login",
-            @"/hk4e_global/mdk/shield/api/verify",@"/hk4e_global/combo/granter/login/v2/login",
-            @"/hk4e_global/combo/granter/api/getConfig",@"/hk4e_global/mdk/shield/api/loadConfig"];
-        BOOL vendor = [host isEqualToString:@"mihoyo.com"] || [host hasSuffix:@".mihoyo.com"] ||
-            [host isEqualToString:@"hoyoverse.com"] || [host hasSuffix:@".hoyoverse.com"] ||
-            [host isEqualToString:@"yuanshen.com"] || [host hasSuffix:@".yuanshen.com"];
-        if (vendor && [paths containsObject:path]) RPCRecord(@"url_constructed", @{@"host":host,@"path":path});
+        if (RPCVendorHost(host) && [RPCRoutePaths() containsObject:path])
+            RPCRecord(@"url_constructed", @{@"host":host,@"path":path});
     } @finally { RPCRecordingURL = NO; }
+}
+static NSURL *RPCRewriteURL(NSURL *url) {
+    if (!RPCLocalRoutingEnabled || RPCRoutingURL || ![url isKindOfClass:NSURL.class]) return url;
+    if (!RPCVendorHost(url.host) || ![RPCRoutePaths() containsObject:url.path]) return url;
+    NSString *scheme = url.scheme.lowercaseString;
+    if (![@[@"https",@"http"] containsObject:scheme] || url.user.length || url.password.length ||
+        (url.port && ![@[@80,@443] containsObject:url.port])) return url;
+    RPCRoutingURL = YES;
+    @try {
+        NSURLComponents *parts = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:YES];
+        // Preserve the encoded path/query byte representation. Resource/CDN URLs never match.
+        parts.scheme = @"http"; parts.host = @"127.0.0.1"; parts.port = @8088;
+        NSURL *result = parts.URL;
+        if (result) RPCRecord(@"url_routed_to_loopback", @{@"host":url.host.lowercaseString,@"path":url.path,@"port":@8088});
+        return result ?: url;
+    } @finally { RPCRoutingURL = NO; }
 }
 static id RPCURL(id receiver, SEL selector, id value) {
     id result = ((id (*)(id,SEL,id))RPCOriginalURL)(receiver,selector,value);
-    RPCObserveURL(result); return result;
+    RPCObserveURL(result); return RPCRewriteURL(result);
+}
+static id RPCRelativeURL(id receiver, SEL selector, id value, id base) {
+    id result = ((id (*)(id,SEL,id,id))RPCOriginalRelativeURL)(receiver,selector,value,base);
+    RPCObserveURL(result); return RPCRewriteURL(result);
 }
 static void RPCObserveKey(NSString *method, id key) {
     if (![key isKindOfClass:NSString.class]) return;
@@ -246,12 +321,15 @@ __attribute__((constructor)) static void RPCInitialize(void) {
         [NSFileManager.defaultManager createDirectoryAtPath:RPCReportDirectory withIntermediateDirectories:YES attributes:nil error:nil];
         RPCReportQueue = dispatch_queue_create("local.runtime.integration.reports",DISPATCH_QUEUE_SERIAL);
         RPCEvents = [NSMutableArray new]; RPCSeen = [NSMutableSet new];
-        RPCRecord(@"library_loaded", @{@"bundle_id":bundle,@"mode":@"observe",@"tls_validation_changed":@NO});
+        RPCLocalRoutingEnabled = [RPCConfiguration[@"LocalRoutingEnabled"] isEqual:@YES] ||
+            [NSFileManager.defaultManager fileExistsAtPath:[RPCReportDirectory stringByAppendingPathComponent:@"enable-routing.txt"]];
+        RPCRecord(@"library_loaded", @{@"bundle_id":bundle,@"mode":RPCLocalRoutingEnabled ? @"loopback" : @"observe",@"tls_validation_changed":@NO});
         RPCObserveClassMethod(NSURL.class,@selector(URLWithString:),(IMP)RPCURL,3,&RPCOriginalURL);
+        RPCObserveClassMethod(NSURL.class,@selector(URLWithString:relativeToURL:),(IMP)RPCRelativeURL,4,&RPCOriginalRelativeURL);
         Class crypto = NSClassFromString(@"MiHoYoRSAEncryptor");
         RPCObserveClassMethod(crypto,NSSelectorFromString(@"encryptString:publicKey:"),(IMP)RPCRSAString,4,&RPCOriginalRSAString);
         RPCObserveClassMethod(crypto,NSSelectorFromString(@"encryptData:publicKey:"),(IMP)RPCRSAData,4,&RPCOriginalRSAData);
-        RPCRecord(@"observers_registered", @{@"url":@(RPCOriginalURL != NULL),
+        RPCRecord(@"observers_registered", @{@"url":@(RPCOriginalURL != NULL),@"relative_url":@(RPCOriginalRelativeURL != NULL),
             @"sdk_string":@(RPCOriginalRSAString != NULL),@"sdk_data":@(RPCOriginalRSAData != NULL)});
         RPCServerDirectory = [documents stringByAppendingPathComponent:@"LocalServer"];
         // Optional same-process trial: enabled only by an explicit local marker and
