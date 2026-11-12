@@ -740,7 +740,7 @@ assert any(line.rstrip().endswith(' _JNI_OnLoad_java') for line in symbols)
 PY
 xcrun --sdk "$sdk_name" clang -dynamiclib -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
   -fobjc-arc -fmodules -O2 -DRP_CLIENT_OBSERVER_ONLY=1 App/main.m "$kit/RuntimeHost.dylib" \
-  -framework UIKit -framework Foundation -framework Security -install_name @executable_path/Frameworks/RuntimeClientProbe.dylib \
+  -framework UIKit -framework Foundation -framework Security -framework WebKit -install_name @executable_path/Frameworks/RuntimeClientProbe.dylib \
   -o "$kit/RuntimeClientProbe.dylib"
 cat > "$kit/RuntimeHostKit.h" <<'HEADER'
 #import <Foundation/Foundation.h>
