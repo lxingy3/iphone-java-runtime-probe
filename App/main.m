@@ -180,6 +180,7 @@ int main(int argc,char **argv) { @autoreleasepool { return UIApplicationMain(arg
 #import <objc/runtime.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 
 extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
 extern NSDictionary *RPHostSnapshot(void);
@@ -304,6 +305,111 @@ static BOOL RPCObserveClassMethod(Class target, SEL selector, IMP replacement, N
     method_setImplementation(method,replacement);
     return YES;
 }
+// NSURL factory hooks do not see Swift URL / CoreFoundation URL construction.
+// Route again at the NSURLSession task boundary, retaining the original request
+// method, body, timeout, cache policy and completion/delegate behavior.
+static NSURLRequest *RPCRewriteRequest(NSURLRequest *request) {
+    if (![request isKindOfClass:NSURLRequest.class]) return request;
+    NSURL *logicalURL = request.URL;
+    NSString *hostHeader = [request valueForHTTPHeaderField:@"Host"].lowercaseString;
+    unsigned char address[16];
+    if (logicalURL.host.length && RPCVendorHost(hostHeader) && (inet_pton(AF_INET,logicalURL.host.UTF8String,address) == 1 ||
+        inet_pton(AF_INET6,logicalURL.host.UTF8String,address) == 1)) {
+        NSURLComponents *parts = [NSURLComponents componentsWithURL:logicalURL resolvingAgainstBaseURL:YES];
+        parts.host = hostHeader;
+        logicalURL = parts.URL ?: logicalURL;
+    }
+    RPCObserveURL(logicalURL);
+    NSURL *rewritten = RPCRewriteURL(logicalURL);
+    if ([rewritten isEqual:logicalURL]) return request;
+    if ([rewritten isEqual:request.URL]) return request;
+    NSMutableURLRequest *copy = [request mutableCopy];
+    copy.URL = rewritten;
+    // HTTPDNS clients can explicitly set Host. The new destination owns it.
+    [copy setValue:nil forHTTPHeaderField:@"Host"];
+    RPCRecord(@"request_routed_at_session", @{@"path":logicalURL.path,@"host":logicalURL.host.lowercaseString,
+        @"method":request.HTTPMethod ?: @"GET",@"port":@8088});
+    return copy;
+}
+typedef void (^RPCCompletion)(NSData *, NSURLResponse *, NSError *);
+static RPCCompletion RPCResponseAudit(NSURL *url, RPCCompletion completion) {
+    if (!completion || !RPCLocalRoutingEnabled || ![url.host isEqual:@"127.0.0.1"] ||
+        ![url.port isEqual:@8088] || ![RPCRoutePaths() containsObject:url.path]) return completion;
+    NSString *path = url.path;
+    return ^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSMutableDictionary *details = [@{@"path":path,@"error_code":@(error.code)} mutableCopy];
+        if ([response isKindOfClass:NSHTTPURLResponse.class]) details[@"http_status"] = @([(NSHTTPURLResponse *)response statusCode]);
+        // Numeric result only; never persist response tokens, account data or text.
+        if (data.length && data.length <= 1024*1024) {
+            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if ([json isKindOfClass:NSDictionary.class] && [json[@"retcode"] isKindOfClass:NSNumber.class])
+                details[@"retcode"] = json[@"retcode"];
+        }
+        RPCRecord(@"local_http_result", details);
+        completion(data,response,error);
+    };
+}
+static Method RPCOwnMethod(Class cls, SEL selector) {
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls,&count), result = NULL;
+    for (unsigned int i=0;i<count;i++) if (method_getName(methods[i]) == selector) { result = methods[i]; break; }
+    free(methods);
+    return result;
+}
+static NSUInteger RPCInstallSessionRouting(void) {
+    // Real Foundation sessions use a concrete subclass. Initialize it, then patch
+    // only method implementations actually owned by NSURLSession subclasses.
+    [NSURLSession sharedSession];
+    NSURLSession *ephemeral = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
+    [ephemeral finishTasksAndInvalidate];
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    NSUInteger installed = 0;
+    for (unsigned int i=0;i<count;i++) {
+        Class cls = classes[i], parent = cls;
+        while (parent && parent != NSURLSession.class) parent = class_getSuperclass(parent);
+        if (!parent) continue;
+        for (NSString *name in @[@"dataTaskWithRequest:",@"dataTaskWithURL:",
+            @"dataTaskWithRequest:completionHandler:",@"dataTaskWithURL:completionHandler:",
+            @"uploadTaskWithRequest:fromData:",@"uploadTaskWithRequest:fromData:completionHandler:"]) {
+            SEL selector = NSSelectorFromString(name);
+            Method method = RPCOwnMethod(cls,selector);
+            if (!method) continue;
+            BOOL upload = [name hasPrefix:@"upload"], withCompletion = [name hasSuffix:@"completionHandler:"], isURL = [name hasPrefix:@"dataTaskWithURL:"];
+            NSUInteger arguments = 3 + (upload ? 1 : 0) + (withCompletion ? 1 : 0);
+            NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)];
+            BOOL valid = signature.numberOfArguments == arguments && signature.methodReturnType[0] == '@';
+            for (NSUInteger a=2;valid && a<arguments;a++) valid &= [signature getArgumentTypeAtIndex:a][0] == '@';
+            if (!valid) continue;
+            IMP original = method_getImplementation(method), replacement = NULL;
+            if (upload && withCompletion) {
+                replacement = imp_implementationWithBlock(^id(id receiver, NSURLRequest *request, NSData *body, RPCCompletion completion) {
+                    NSURLRequest *routed = RPCRewriteRequest(request);
+                    return ((id (*)(id,SEL,id,id,id))original)(receiver,selector,routed,body,RPCResponseAudit(routed.URL,completion));
+                });
+            } else if (upload) {
+                replacement = imp_implementationWithBlock(^id(id receiver, NSURLRequest *request, NSData *body) {
+                    return ((id (*)(id,SEL,id,id))original)(receiver,selector,RPCRewriteRequest(request),body);
+                });
+            } else if (withCompletion) {
+                replacement = imp_implementationWithBlock(^id(id receiver, id input, RPCCompletion completion) {
+                    id routed = isURL ? RPCRewriteURL(input) : RPCRewriteRequest(input);
+                    NSURL *url = isURL ? routed : [(NSURLRequest *)routed URL];
+                    return ((id (*)(id,SEL,id,id))original)(receiver,selector,routed,RPCResponseAudit(url,completion));
+                });
+            } else {
+                replacement = imp_implementationWithBlock(^id(id receiver, id input) {
+                    return ((id (*)(id,SEL,id))original)(receiver,selector,isURL ? RPCRewriteURL(input) : RPCRewriteRequest(input));
+                });
+            }
+            method_setImplementation(method,replacement);
+            installed++;
+        }
+    }
+    free(classes);
+    RPCRecord(@"session_routing_registered", @{@"implementations":@(installed)});
+    return installed;
+}
 static void RPCLaunched(void) {
     RPCRecord(@"application_launched", @{@"version":[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"",
         @"server_enabled":@(RPCPreparedServer)});
@@ -340,6 +446,7 @@ __attribute__((constructor)) static void RPCInitialize(void) {
         RPCRecord(@"library_loaded", @{@"bundle_id":bundle,@"mode":RPCLocalRoutingEnabled ? @"loopback" : @"observe",@"tls_validation_changed":@NO});
         RPCObserveClassMethod(NSURL.class,@selector(URLWithString:),(IMP)RPCURL,3,&RPCOriginalURL);
         RPCObserveClassMethod(NSURL.class,@selector(URLWithString:relativeToURL:),(IMP)RPCRelativeURL,4,&RPCOriginalRelativeURL);
+        RPCInstallSessionRouting();
         Class crypto = NSClassFromString(@"MiHoYoRSAEncryptor");
         RPCObserveClassMethod(crypto,NSSelectorFromString(@"encryptString:publicKey:"),(IMP)RPCRSAString,4,&RPCOriginalRSAString);
         RPCObserveClassMethod(crypto,NSSelectorFromString(@"encryptData:publicKey:"),(IMP)RPCRSAData,4,&RPCOriginalRSAData);
