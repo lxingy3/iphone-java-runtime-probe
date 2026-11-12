@@ -333,6 +333,49 @@ finally:
     pathlib.Path('build/local-login-fixture/private.der').unlink(missing_ok=True)
 PY
 sdk_name="${PROBE_SDK:-iphoneos}"
+# Measure the class-space reservation from the exact native argument builder.
+# This desktop VM check validates the argument and telemetry contract; physical
+# WebKit coexistence still requires the original device reproduction.
+python3 - <<'PY'
+import json,pathlib,re,subprocess
+source=pathlib.Path('App/main.m').read_text()
+memory=re.search(r'static NSArray<NSString \*> \*RPRuntimeMemoryArguments\(.*?\n\}',source,re.S).group(0)
+fixture='''#import <Foundation/Foundation.h>
+MEMORY
+int main(int argc,char **argv) { @autoreleasepool {
+    NSArray *args=RPRuntimeMemoryArguments(argc>1 && strcmp(argv[1],"server")==0);
+    NSData *json=[NSJSONSerialization dataWithJSONObject:args options:0 error:nil];
+    fwrite(json.bytes,1,json.length,stdout); return 0;
+} }
+'''.replace('MEMORY',memory)
+pathlib.Path('build/memory-arguments.m').write_text(fixture)
+profiles={}
+for profile in ('standalone','embedded'):
+    command=['xcrun','clang','-fobjc-arc','-framework','Foundation']
+    if profile=='embedded': command+=['-DRP_EMBEDDED_LIBRARY=1']
+    binary='build/memory-arguments-'+profile
+    subprocess.run(command+['build/memory-arguments.m','-o',binary],check=True)
+    profiles[profile]=json.loads(subprocess.check_output([binary,'server']))
+    assert '-Xmx2048m' in profiles[profile]
+assert profiles['standalone']==['-Xmx2048m']
+assert profiles['embedded']==['-Xmx2048m','-XX:CompressedClassSpaceSize=128m']
+classes=pathlib.Path('build/memory-fixture-classes');classes.mkdir(exist_ok=True)
+subprocess.run(['javac','--release','17','-d',str(classes),'Java/DeviceProbe.java'],check=True)
+reports={}
+for profile,flags in profiles.items():
+    output=pathlib.Path('build/memory-'+profile+'.json')
+    subprocess.run(['java','-Xint',*flags,'-cp',str(classes),'DeviceProbe','--memory-report',str(output)],check=True,timeout=30)
+    reports[profile]=json.loads(output.read_text())
+    assert reports[profile]['heap_max_bytes']==2147483648
+    reports[profile]['class_space_max_bytes']=next(p['max_bytes'] for p in reports[profile]['pools'] if p['name']=='Compressed Class Space')
+assert reports['embedded']['class_space_max_bytes']==134217728
+assert reports['standalone']['class_space_max_bytes']>reports['embedded']['class_space_max_bytes']
+result={'passed':True,'heap_max_unchanged_bytes':2147483648,'class_space_before_bytes':reports['standalone']['class_space_max_bytes'],
+        'class_space_after_bytes':reports['embedded']['class_space_max_bytes'],'physical_webkit_coexistence_verified':False,
+        'actual_game_tested':False}
+pathlib.Path('build/RuntimeHostKit/memory-reservation-regression.json').write_text(json.dumps(result,indent=2))
+print('class-space reservation regression:',json.dumps(result))
+PY
 # macOS ships Bash 3.2, whose nounset handling rejects empty array expansion.
 extra_target_flags=( --disable-warnings-as-errors )
 case "$sdk_name" in
