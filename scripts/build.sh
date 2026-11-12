@@ -73,6 +73,19 @@ PRODUCTION
 static NSURL *FixtureURL(NSString *text) {
     return CFBridgingRelease(CFURLCreateWithString(kCFAllocatorDefault,(__bridge CFStringRef)text,NULL));
 }
+static NSDictionary *FetchRegionFixture(NSURLSession *session, NSURL *url) {
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    __block NSDictionary *json = nil;
+    __block BOOL success = NO;
+    NSURLSessionDataTask *task = [session dataTaskWithURL:url completionHandler:^(NSData *data,NSURLResponse *response,NSError *error) {
+        json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        success = !error && [(NSHTTPURLResponse *)response statusCode] == 200;
+        dispatch_semaphore_signal(done);
+    }];
+    [task resume];
+    assert(dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0 && success);
+    return json;
+}
 int main(int argc,char **argv) { @autoreleasepool {
     BOOL legacy = argc > 1 && strcmp(argv[1],"legacy")==0;
     RPCLocalRoutingEnabled = YES;
@@ -134,13 +147,30 @@ int main(int argc,char **argv) { @autoreleasepool {
             NSURLSessionTask *other = [session dataTaskWithURL:FixtureURL(negative)];
             assert([other.currentRequest.URL.absoluteString isEqual:negative]); [other cancel];
         }
+        NSURL *region = FixtureURL(@"https://cngfdispatch.yuanshen.com/query_cur_region?version=CNRELiOS7.2.0&key_id=2&platform=3&dispatchSeed=FIXTURE_DISPATCH_SECRET&encoded=a%2Bb%2Fc%25");
+        RPCConfiguration = @{};
+        NSDictionary *missing = FetchRegionFixture(session,region);
+        assert([missing[@"retcode"] isEqual:@0] && !missing[@"content"] && !missing[@"sign"]);
+        RPCConfiguration = @{@"LocalRegionName":@"fixture_region"};
+        NSDictionary *mapped = FetchRegionFixture(session,region);
+        assert([mapped[@"fixture_passed"] isEqual:@YES] && [mapped[@"content"] length] && [mapped[@"sign"] length]);
+        assert([region.host isEqual:@"cngfdispatch.yuanshen.com"] && [region.path isEqual:@"/query_cur_region"]);
+        NSURL *alreadyLocal = FixtureURL(@"http://127.0.0.1:8088/query_cur_region?encoded=a%2Bb%2Fc%25");
+        assert([RPCRewriteURL(alreadyLocal).absoluteString isEqual:@"http://127.0.0.1:8088/query_cur_region/fixture_region?encoded=a%2Bb%2Fc%25"]);
+        RPCConfiguration = @{@"LocalRegionName":@"../escape"};
+        assert(!RPCConfiguredRegionPath() && [RPCRewriteURL(region).path isEqual:@"/query_cur_region"]);
+        RPCConfiguration = @{@"LocalRegionName":@"fixture_region"};
+        [[NSJSONSerialization dataWithJSONObject:@{@"passed":@YES,@"legacy_empty_dispatch_reproduced":@YES,
+            @"configured_region_response_received":@YES,@"encoded_query_preserved":@YES,@"input_url_unmodified":@YES,
+            @"already_local_bare_path_mapped":@YES,@"invalid_region_name_rejected":@YES,@"real_client_signature_verified":@NO}
+            options:NSJSONWritingPrettyPrinted error:nil] writeToFile:@"build/RuntimeHostKit/region-routing-regression.json" atomically:YES];
         RPCLocalRoutingEnabled = NO;
         NSURLSessionTask *disabled = [session dataTaskWithRequest:request];
         assert([disabled.currentRequest.URL.host isEqual:@"passport-api.mihoyo.com"]); [disabled cancel];
     }
     dispatch_sync(RPCReportQueue,^{});
     NSString *raw = [NSString stringWithContentsOfFile:[RPCReportDirectory stringByAppendingPathComponent:@"client-observations.json"] encoding:NSUTF8StringEncoding error:nil] ?: @"";
-    for (NSString *secret in @[@"FIXTURE_SECRET",@"FIXTURE_BODY_SECRET",@"FIXTURE_HEADER_SECRET",@"FIXTURE_RESPONSE_SECRET",@"encoded=",@"nonce="])
+    for (NSString *secret in @[@"FIXTURE_SECRET",@"FIXTURE_BODY_SECRET",@"FIXTURE_HEADER_SECRET",@"FIXTURE_RESPONSE_SECRET",@"FIXTURE_DISPATCH_SECRET",@"encoded=",@"nonce="])
         assert(![raw containsString:secret]);
     NSDictionary *report = @{@"passed":@YES,@"legacy_factory_bypass_reproduced":@(legacy),@"loopback_http_verified":@(!legacy && httpPassed),
         @"request_body_method_query_preserved":@YES,@"input_request_unmodified":@YES,@"credentials_or_tokens_logged":@NO,
@@ -158,6 +188,13 @@ subprocess.run(['xcrun','clang','-fobjc-arc','-fblocks','-framework','Foundation
 subprocess.run(['build/request-boundary-test','legacy'],check=True,timeout=20)
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args): pass
+    def do_GET(self):
+        expected='/query_cur_region/fixture_region?version=CNRELiOS7.2.0&key_id=2&platform=3&dispatchSeed=FIXTURE_DISPATCH_SECRET&encoded=a%2Bb%2Fc%25'
+        value={'retcode':0,'data':{}}
+        if self.path==expected:
+            value={'content':'Zml4dHVyZS1yZWdpb24=','sign':'Zml4dHVyZS1zaWduYXR1cmU=','fixture_passed':True}
+        data=json.dumps(value).encode()
+        self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def do_POST(self):
         body=self.rfile.read(int(self.headers.get('Content-Length','0')))
         passed=(self.path=='/account/ma-cn-passport/app/loginByPassword?encoded=a%2Bb%2Fc%25&nonce=FIXTURE_SECRET'
