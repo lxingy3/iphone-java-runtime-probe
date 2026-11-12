@@ -268,6 +268,7 @@ int main(int argc,char **argv) { @autoreleasepool { return UIApplicationMain(arg
 extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
 extern NSDictionary *RPHostSnapshot(void);
 extern void RPHostSceneEvent(NSString *);
+#import "NativePlaySupport.h"
 
 static NSString *RPCReportDirectory;
 static NSString *RPCServerDirectory;
@@ -634,6 +635,7 @@ static void RPCLaunched(void) {
     NSError *error = nil;
     NSString *resources = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"LocalRuntime"];
     RPCHostStarted = RPHostStart(RPCServerDirectory,resources,YES,&error);
+    if (RPCHostStarted) [RPSPlaySupport.shared start:RPCServerDirectory];
     RPCRecord(@"host_bootstrap", @{@"accepted":@(RPCHostStarted),@"error":error.localizedDescription ?: @"",
         @"current_directory":NSFileManager.defaultManager.currentDirectoryPath ?: @"",
         @"expected_directory":[RPCServerDirectory stringByAppendingPathComponent:@"server"],
