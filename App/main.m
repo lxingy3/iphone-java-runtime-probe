@@ -63,10 +63,19 @@ static BOOL RPCInstallSignalFixture(void) {
 }
 static void *RPCSignalWorker(void *unused) {
     (void)unused;
+    sigset_t unblocked, previous;
+    sigemptyset(&unblocked);
+    sigaddset(&unblocked,SIGSEGV); sigaddset(&unblocked,SIGBUS);
+    sigaddset(&unblocked,SIGILL); sigaddset(&unblocked,SIGPIPE);
+    if (pthread_sigmask(SIG_UNBLOCK,&unblocked,&previous) != 0) {
+        RPCSignalFixtureFailure = 1;
+        return NULL;
+    }
     for (int i=0; i<32; i++) {
         RPCSignalFault();
         if (raise(SIGILL) != 0 || raise(SIGPIPE) != 0) RPCSignalFixtureFailure = 1;
     }
+    if (pthread_sigmask(SIG_SETMASK,&previous,NULL) != 0) RPCSignalFixtureFailure = 1;
     return NULL;
 }
 static NSDictionary *RPCRunSignalFixture(void) {
