@@ -49,6 +49,7 @@ jobs:
             build/build.log
             build/toolchain.json
             build/module-check.json
+            build/directory-identity-test.json
             build/OpenJDK.xcframework
             build/runtime
             build/DeviceProbe.jar
