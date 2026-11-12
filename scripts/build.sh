@@ -10,6 +10,7 @@ if [[ "$(uname -m)" != arm64 ]]; then
 fi
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$project_root"
+if [[ "${PROBE_REBUILD_RUNTIME:-false}" == true ]]; then unset PROBE_RUNTIME_ARCHIVE; fi
 mkdir -p build
 exec > >(tee build/build.log) 2>&1
 # Exercise the exact guard used by the embedding API before building the app.
@@ -499,6 +500,39 @@ if before in s:
     p.write_text(s.replace(before,after))
 else:
     assert after in s, 'Unexpected upstream Zero OS WX guard'
+# The common POSIX handler reads the interrupted PC before it can chain to a
+# preinstalled native host handler. BSD Zero left these accessors unimplemented,
+# aborting the whole embedding process even for a recoverable native signal.
+before='''address os::Posix::ucontext_get_pc(const ucontext_t* uc) {
+  ShouldNotCallThis();
+  return nullptr;
+}
+
+void os::Posix::ucontext_set_pc(ucontext_t * uc, address pc) {
+  ShouldNotCallThis();
+}'''
+after='''address os::Posix::ucontext_get_pc(const ucontext_t* uc) {
+#if defined(__APPLE__) && defined(AARCH64)
+  return (address)__darwin_arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
+#else
+  ShouldNotCallThis();
+  return nullptr;
+#endif
+}
+
+void os::Posix::ucontext_set_pc(ucontext_t * uc, address pc) {
+#if defined(__APPLE__) && defined(AARCH64)
+  __darwin_arm_thread_state64_set_pc_fptr(uc->uc_mcontext->__ss, (void*)pc);
+#else
+  ShouldNotCallThis();
+#endif
+}'''
+s=p.read_text()
+if before in s:
+    assert s.count(before)==1
+    p.write_text(s.replace(before,after))
+else:
+    assert after in s, 'Unexpected upstream Zero signal context layout'
 p=Path('build/mobile/src/hotspot/os/bsd/os_bsd.cpp')
 s=p.read_text()
 before='#endif\n    Arguments::set_java_home(buf);'
@@ -619,7 +653,7 @@ for filename in ['conf/security/java.security','lib/tzdb.dat','lib/modules']:
 for filename in ['LICENSE','ASSEMBLY_EXCEPTION']:
     shutil.copy2(pathlib.Path('build/mobile')/filename,image/filename)
 (image/'SOURCE.txt').write_text('OpenJDK Mobile source: https://github.com/openjdk/mobile/tree/c13417aa36f8f44755d0984b58aa735d0b41f233\n')
-(image/'LOCAL-PATCHES.txt').write_text('Exclude JIT WX helpers consistently for Zero. On iOS, honor the embedding app JAVA_HOME before bootstrap path initialization. Reserve the iOS Zero entry-descriptor cache without executable permission.\nReproducible patches: https://github.com/lxingy3/iphone-java-runtime-probe/blob/main/scripts/build.sh\n')
+(image/'LOCAL-PATCHES.txt').write_text('Exclude JIT WX helpers consistently for Zero. On iOS, honor the embedding app JAVA_HOME before bootstrap path initialization. Reserve the iOS Zero entry-descriptor cache without executable permission. Implement Apple ARM64 Zero signal-context PC accessors so the existing POSIX signal chaining can run.\nReproducible patches: https://github.com/lxingy3/iphone-java-runtime-probe/blob/main/scripts/build.sh\n')
 PY
 libraries=( "$device_root/hotspot/variant-zero/libjvm/objs/static/libjvm.a" "$support_root/libffi.a" )
 for entry in java.base/java java.base/verify java.base/zip java.base/net java.base/nio java.base/jimage java.management/management jdk.management/management_ext; do
