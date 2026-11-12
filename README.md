@@ -15,6 +15,15 @@ verifying the method, body and encoded query. These checks do not establish that
 real game uses this network path, accepts server signatures, or can enter the world.
 Real native gameplay remains unverified.
 
+The physical r36 client loaded the host libraries and produced loopback URL-routing
+observations, but embedded server startup was rejected by the cwd guard. The r37
+candidate compares directory device/inode identity instead of path spelling, so a
+symlink alias can pass while a genuinely changed directory remains rejected. A native
+regression reproduces the old alias rejection and checks different/missing directories
+and regular files. Bootstrap diagnostics now record expected/actual paths and identity
+results locally; they are not uploaded. This candidate does not change cwd after game
+startup. Same-process startup and actual native gameplay still require device validation.
+
 ## Verified results
 
 On November 11, 2026, version 0.1 passed all twelve runtime checks on a physical
