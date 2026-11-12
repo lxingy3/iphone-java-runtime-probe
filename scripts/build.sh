@@ -682,6 +682,8 @@ if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then
   git -C "$verify_source" checkout --detach FETCH_HEAD
   framework_library="$(find build/OpenJDK.xcframework -name libOpenJDK.a -type f)"
   test -n "$framework_library"
+  xcrun nm -gU "$framework_library" > build/cached-runtime-exports.txt
+  if ! grep -q ' T _VerifyClassForMajorVersion$' build/cached-runtime-exports.txt; then
   framework_headers="$(dirname "$framework_library")/Headers"
   verify_target=arm64-apple-ios18.5
   if [[ "$sdk_name" == iphonesimulator ]]; then verify_target=arm64-apple-ios18.5-simulator; fi
@@ -695,6 +697,9 @@ if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then
   cp build/OpenJDK-with-verify.a "$framework_library"
   xcrun nm -gU "$framework_library" | grep ' T _VerifyClassForMajorVersion$'
   printf '%s\n' 'Link the pinned legacy bytecode verifier into the embedding app; retain bytecode verification.' >> build/runtime/LOCAL-PATCHES.txt
+  else
+    echo 'Cached runtime already contains the pinned verifier; retain the existing implementation.'
+  fi
 fi
 runtime_source="$project_root/build/mobile"
 if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then runtime_source="$verify_source"; fi
