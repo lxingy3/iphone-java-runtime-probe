@@ -897,6 +897,11 @@ observer_results=[]
 result={'passed':False,'error':'No report before timeout'}
 class RoutingMock(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args): pass
+    def do_GET(self):
+        passed=self.path=='/local/manage/status' and self.headers.get('X-Local-Maintenance')=='FIXTURE_MAINTENANCE'
+        data=json.dumps({'retcode':0,'ready':passed,'fullSaveAt':'2026-11-12T12:00:00Z'}).encode()
+        self.send_response(200 if passed else 403);self.send_header('Content-Type','application/json')
+        self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def do_POST(self):
         size=int(self.headers.get('Content-Length','0'))
         body=self.rfile.read(size) if 0<=size<=4096 else b''
@@ -941,6 +946,16 @@ try:
             http_result=json.loads(http_report.read_text()) if http_report.is_file() else {'passed':False,'error':'No loopback HTTP report'}
             fixture_result['loopback_http']=http_result
             fixture_result['passed']=fixture_result.get('passed') is True and http_result.get('passed') is True
+            support_report=fixture_container/'Documents/play-support-fixture.json'
+            for _ in range(30):
+                if support_report.is_file(): break
+                time.sleep(1)
+            support=json.loads(support_report.read_text()) if support_report.is_file() else {'passed':False,'error':'No native support report'}
+            fixture_result['play_support']=support
+            fixture_result['passed'] &= support.get('passed') is True
+            (output/'play-support-fixture.json').write_text(json.dumps(support,indent=2))
+            support_png=fixture_container/'Documents/play-support-menu.png'
+            if support_png.is_file(): shutil.copy2(support_png,output/'play-support-menu.png')
             if observations.is_file():
                 raw=observations.read_text()
                 fixture_result['observations_exclude_sensitive_input']=all(x not in raw for x in ['FIXTURE_INPUT_NEVER_RECORD','token=','encoded=','routing-test','not-an-account'])
