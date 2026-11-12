@@ -24,7 +24,30 @@ public final class DeviceProbe {
     public static void main(String[] args) throws Exception {
         if (args.length == 2 && args[0].equals("--prepare")) prepareServer(args[1]);
         else if (args.length == 2 && args[0].equals("--server")) { prepareServer(args[1]); startServer(); }
+        else if (args.length == 2 && args[0].equals("--memory-report")) writeMemoryReport(Path.of(args[1]));
         else run();
+    }
+    static void writeMemoryReport(Path destination) throws IOException {
+        var heap = java.lang.management.ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
+        StringBuilder json = new StringBuilder("{\"heap_used_bytes\":").append(heap.getUsed())
+            .append(",\"heap_committed_bytes\":").append(heap.getCommitted())
+            .append(",\"heap_max_bytes\":").append(heap.getMax())
+            .append(",\"loaded_classes\":").append(java.lang.management.ManagementFactory.getClassLoadingMXBean().getLoadedClassCount())
+            .append(",\"pools\":[");
+        String separator = "";
+        for (var pool : java.lang.management.ManagementFactory.getMemoryPoolMXBeans()) {
+            var usage = pool.getUsage();
+            if (usage == null) continue;
+            json.append(separator).append("{\"name\":").append(quote(pool.getName()))
+                .append(",\"used_bytes\":").append(usage.getUsed())
+                .append(",\"committed_bytes\":").append(usage.getCommitted())
+                .append(",\"max_bytes\":").append(usage.getMax()).append("}");
+            separator = ",";
+        }
+        json.append("]}");
+        Path temporary = destination.resolveSibling(destination.getFileName()+".tmp");
+        Files.writeString(temporary, json.toString(), StandardCharsets.UTF_8);
+        Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
     }
     public static void prepareServer(String documents) throws Exception {
         prepareServer(documents, null);
@@ -114,6 +137,17 @@ public final class DeviceProbe {
         if (serverLoader != null) throw new IllegalStateException("Server already started in this process");
         Path root = Path.of("").toAbsolutePath();
         requireServerFiles(root);
+        Thread memoryReports = new Thread(() -> {
+            try {
+                while (!Thread.currentThread().isInterrupted()) {
+                    writeMemoryReport(root.resolve("runtime-memory.json"));
+                    Thread.sleep(30_000);
+                }
+            } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            catch (Exception failure) { System.err.println("Memory diagnostics unavailable: "+failure.getClass().getSimpleName()); }
+        }, "local-memory-diagnostics");
+        memoryReports.setDaemon(true);
+        memoryReports.start();
         List<Path> jars = new ArrayList<>();
         jars.add(root.resolve("portable-launcher.jar"));
         try (var dependencies = Files.list(root.resolve("lib"))) {
