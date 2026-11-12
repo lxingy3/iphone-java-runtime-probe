@@ -851,7 +851,7 @@ for fixture_path in "$fixture" "$project_root/build/ObserverFixtureWrong.app" "$
   codesign --force --sign - "$fixture_path"
 done
 python3 - <<'PY'
-import http.server,json,os,pathlib,re,shutil,subprocess,threading,time
+import http.server,json,os,pathlib,re,shutil,signal,subprocess,threading,time
 output=pathlib.Path('build/simulator-results');output.mkdir(parents=True,exist_ok=True)
 def log(message):
     print(message,flush=True)
@@ -908,7 +908,10 @@ try:
         for old in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','routing-http-fixture.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/host-status.json','EmbeddedRuntime/native-lookup.json']:
             stale=fixture_container/'Documents'/old
             if stale.is_file(): stale.unlink()
-        command('xcrun','simctl','launch','--terminate-running-process',udid,bundle,*arguments,timeout=60)
+        launched=command('xcrun','simctl','launch',udid,bundle,*arguments,timeout=60)
+        pid_match=re.search(re.escape(bundle)+r':\s*(\d+)',launched.stdout)
+        assert pid_match, 'Missing fixture process identifier'
+        fixture_pid=int(pid_match.group(1))
         fixture_report=fixture_container/'Documents/observer-fixture.json'
         for _ in range(30):
             if fixture_report.is_file(): break
@@ -943,7 +946,14 @@ try:
             (output/(variant+'.json')).write_text(json.dumps(fixture_result,indent=2))
             for evidence in [fixture_container/'Documents/embedded-request.json',fixture_container/'Documents/EmbeddedRuntime/host-status.json',fixture_container/'Documents/EmbeddedRuntime/runtime-probe.json']:
                 if evidence.is_file(): shutil.copy2(evidence,output/(variant+'-'+evidence.name))
-        command('xcrun','simctl','terminate',udid,bundle,check=False,timeout=30)
+        # simctl terminate can hang during native-library global teardown and
+        # block the entire CoreSimulator channel. End only our verified fixture
+        # PID directly; never signal an unrelated process or use a broad pkill.
+        process=command('ps','-p',str(fixture_pid),'-o','comm=',check=False,timeout=5)
+        executable=process.stdout.strip()
+        if executable:
+            assert udid in executable and executable.endswith('/'+variant+'.app/ObserverFixture'), executable
+            os.kill(fixture_pid,signal.SIGKILL)
     command('xcrun','simctl','install',udid,'build/DerivedData/Build/Products/Release-iphonesimulator/RuntimeProbe.app')
     container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,'local.astaps.RuntimeProbe','data').stdout.strip())
     try:
@@ -965,6 +975,9 @@ except Exception as failure:
 finally:
     mock.shutdown();mock.server_close()
     for variant,fixture_container in fixture_containers.items():
+        for failure_report in fixture_container.rglob('hs_err_pid*.log'):
+            if failure_report.stat().st_size<4_000_000:
+                shutil.copy2(failure_report,output/(variant+'-'+failure_report.name))
         for relative in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','routing-http-fixture.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/host-status.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/jvm-output.log','EmbeddedRuntime/native-lookup.json']:
             source=fixture_container/'Documents'/relative
             if source.is_file(): shutil.copy2(source,output/(variant+'-'+source.name))
