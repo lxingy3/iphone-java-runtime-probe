@@ -13,6 +13,7 @@ static int RPDirectoriesMatch(const char *left, const char *right) {
 // Simulator-only host for the optional observer. No game code or real account data.
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <objc/message.h>
 #include <unistd.h>
 #include <dlfcn.h>
 #include <signal.h>
@@ -116,6 +117,55 @@ static void RPCFixtureHTTP(NSURL *url, NSString *documents) {
     }] resume];
 }
 
+// Exercise the real overlay loaded from the dylib, with a loopback fixture service.
+// It checks touch passthrough and constrained layouts, not physical fold transitions.
+static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
+    NSString *storage=[documents stringByAppendingPathComponent:@"PlaySupportFixture"];
+    NSString *server=[storage stringByAppendingPathComponent:@"server"];
+    [NSFileManager.defaultManager createDirectoryAtPath:server withIntermediateDirectories:YES attributes:nil error:nil];
+    [@"FIXTURE_MAINTENANCE" writeToFile:[server stringByAppendingPathComponent:@"local-maintenance.token"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    id controller=((id(*)(id,SEL))objc_msgSend)(NSClassFromString(@"RPSPlaySupport"),sel_registerName("shared"));
+    ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("start:"),storage);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,9*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
+        NSMutableDictionary *checks=[NSMutableDictionary new];
+        UIWindow *overlay=[controller valueForKey:@"overlay"];
+        UIButton *button=[controller valueForKey:@"button"];
+        NSDictionary *service=[controller valueForKey:@"service"];
+        checks[@"authenticated_loopback_ready"]=@([service[@"ready"] boolValue]);
+        checks[@"overlay_does_not_take_key_window"]=@(gameWindow.isKeyWindow && !overlay.isKeyWindow);
+        checks[@"readiness_label"]=@([button.currentTitle isEqualToString:@"本机 · 就绪"]);
+        UIView *root=[controller view];CGRect original=root.frame;
+        NSMutableArray *layouts=[NSMutableArray new];BOOL within=YES;
+        CGSize sizes[]={{375,812},{812,375},{768,1024},{1024,768}};
+        for(int i=0;i<4;i++){
+            root.frame=(CGRect){CGPointZero,sizes[i]};[root setNeedsLayout];[root layoutIfNeeded];
+            BOOL fit=CGRectContainsRect(root.bounds,button.frame);within &= fit;
+            [layouts addObject:@{@"width":@(sizes[i].width),@"height":@(sizes[i].height),@"buttonFits":@(fit)}];
+        }
+        root.frame=original;[root setNeedsLayout];[root layoutIfNeeded];
+        checks[@"compact_and_expanded_layouts"]=@(within);
+        CGPoint blank=CGPointMake(CGRectGetMidX(overlay.bounds),CGRectGetMaxY(overlay.bounds)-50);
+        checks[@"game_touches_pass_through"]=@([overlay hitTest:blank withEvent:nil]==nil);
+        CGPoint center=[button convertPoint:CGPointMake(CGRectGetMidX(button.bounds),CGRectGetMidY(button.bounds)) toView:overlay];
+        UIView *hit=[overlay hitTest:center withEvent:nil];
+        checks[@"status_button_receives_touch"]=@(hit==button || [hit isDescendantOfView:button]);
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("showStatus"));
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(), ^{
+            UIAlertController *menu=[controller presentedViewController];
+            checks[@"menu_actions"]=@([menu isKindOfClass:UIAlertController.class] && menu.actions.count==4);
+            UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:overlay.bounds.size];
+            NSData *png=[renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *ctx){[overlay drawViewHierarchyInRect:overlay.bounds afterScreenUpdates:YES];}];
+            [png writeToFile:[documents stringByAppendingPathComponent:@"play-support-menu.png"] atomically:YES];
+            [controller dismissViewControllerAnimated:NO completion:^{
+                checks[@"menu_dismisses"]=@([controller presentedViewController]==nil);
+                BOOL passed=YES;for(NSNumber *value in checks.allValues)passed &= value.boolValue;
+                NSDictionary *report=@{@"passed":@(passed),@"checks":checks,@"layouts":layouts,@"physical_fold_verified":@NO,@"actual_game_tested":@NO};
+                [[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil] writeToFile:[documents stringByAppendingPathComponent:@"play-support-fixture.json"] atomically:YES];
+            }];
+        });
+    });
+}
+
 @interface MiHoYoRSAEncryptor : NSObject
 + (NSString *)encryptString:(NSString *)input publicKey:(NSString *)key;
 + (NSData *)encryptData:(NSData *)input publicKey:(NSString *)key;
@@ -203,7 +253,10 @@ static void RPCFixtureHTTP(NSURL *url, NSString *documents) {
             [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil]
                 writeToFile:[documents stringByAppendingPathComponent:@"observer-fixture.json"] atomically:YES];
             label.text = passed ? @"Observer fixture passed" : @"Observer fixture failed";
-            if (passed && routing) RPCFixtureHTTP([NSURL URLWithString:@"https://hk4e-sdk.mihoyo.com/hk4e_cn/mdk/shield/api/login?token=FIXTURE_INPUT_NEVER_RECORD&encoded=a%2Bb%2Fc%25"],documents);
+            if (passed && routing) {
+                RPCFixtureHTTP([NSURL URLWithString:@"https://hk4e-sdk.mihoyo.com/hk4e_cn/mdk/shield/api/login?token=FIXTURE_INPUT_NEVER_RECORD&encoded=a%2Bb%2Fc%25"],documents);
+                RPCSupportFixture(documents,self.window);
+            }
             if (passed && [NSProcessInfo.processInfo.arguments containsObject:@"--probe-embedded-runtime"]) {
                 RPCSignalBaselinePassed = RPCInstallSignalFixture();
                 // The host-local shim must not change the containing app's loader.
