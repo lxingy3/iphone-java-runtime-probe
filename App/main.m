@@ -178,6 +178,7 @@ int main(int argc,char **argv) { @autoreleasepool { return UIApplicationMain(arg
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <Security/Security.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -201,6 +202,13 @@ static IMP RPCOriginalURL;
 static IMP RPCOriginalRelativeURL;
 static IMP RPCOriginalRSAString;
 static IMP RPCOriginalRSAData;
+static IMP RPCOriginalPorteLogin;
+static SecKeyRef RPCLocalLoginKey;
+static NSString *RPCLocalLoginAccount;
+static NSLock *RPCLoginLock;
+static NSDictionary *RPCPendingLogin;
+static NSTimeInterval RPCPendingLoginExpires;
+static NSTimeInterval RPCLoginBlockedUntil;
 
 static void RPCWrite(NSString *name, NSDictionary *value) {
     NSData *json = [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingPrettyPrinted error:nil];
@@ -305,10 +313,97 @@ static BOOL RPCObserveClassMethod(Class target, SEL selector, IMP replacement, N
     method_setImplementation(method,replacement);
     return YES;
 }
+// A local test profile supplies only the configured account name and its server's
+// public key. Credentials stay in the SDK; this adapter retains only one-use RSA
+// ciphertexts usable for up to 30 seconds, never plaintext passwords or tokens.
+static NSData *RPCEncryptLocalLogin(NSString *value) {
+    NSData *plain = [value dataUsingEncoding:NSUTF8StringEncoding];
+    if (!plain || plain.length > SecKeyGetBlockSize(RPCLocalLoginKey)-11) return nil;
+    CFErrorRef error = NULL;
+    CFDataRef encrypted = SecKeyCreateEncryptedData(RPCLocalLoginKey,kSecKeyAlgorithmRSAEncryptionPKCS1,(__bridge CFDataRef)plain,&error);
+    if (error) CFRelease(error);
+    return CFBridgingRelease(encrypted);
+}
+static void RPCCaptureLocalLogin(id account, id password) {
+    if (!RPCLocalRoutingEnabled || !RPCLocalLoginKey || !RPCLoginLock) return;
+    [RPCLoginLock lock];
+    @try {
+        NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+        if (![account isKindOfClass:NSString.class] || ![password isKindOfClass:NSString.class] ||
+            ![account isEqualToString:RPCLocalLoginAccount]) { RPCPendingLogin = nil; return; }
+        if (RPCPendingLogin && RPCPendingLoginExpires <= now) RPCPendingLogin = nil;
+        if (RPCPendingLogin || RPCLoginBlockedUntil > now) {
+            // Concurrent or overlapping SDK attempts cannot borrow credentials.
+            RPCPendingLogin = nil; RPCLoginBlockedUntil = now+30;
+            RPCRecord(@"local_login_prepare_rejected",@{@"reason":@"overlapping_attempts"});
+            return;
+        }
+        NSData *name = RPCEncryptLocalLogin(account), *secret = RPCEncryptLocalLogin(password);
+        if (!name || !secret) { RPCRecord(@"local_login_prepare_rejected",@{@"reason":@"encryption_failed"}); return; }
+        RPCPendingLogin = @{@"account":[name base64EncodedStringWithOptions:0],@"password":[secret base64EncodedStringWithOptions:0]};
+        RPCPendingLoginExpires = now+30;
+        RPCRecord(@"local_login_encrypted",@{@"algorithm":@"RSAES-PKCS1-v1_5",@"ciphertext_bytes":@(secret.length)});
+    } @finally { [RPCLoginLock unlock]; }
+}
+static void RPCLocalPorteLogin(id receiver, SEL selector, id account, id password, id completion) {
+    RPCCaptureLocalLogin(account,password);
+    ((void (*)(id,SEL,id,id,id))RPCOriginalPorteLogin)(receiver,selector,account,password,completion);
+}
+static BOOL RPCConfigureLocalLogin(void) {
+    if (!RPCLocalRoutingEnabled) return NO;
+    if (RPCOriginalPorteLogin) return YES;
+    NSData *manifest = [NSData dataWithContentsOfFile:[RPCReportDirectory stringByAppendingPathComponent:@"local-login.json"]];
+    if (!manifest || manifest.length > 16384) return NO;
+    id profile = [NSJSONSerialization JSONObjectWithData:manifest options:0 error:nil];
+    if (![profile isKindOfClass:NSDictionary.class] || ![profile[@"account"] isKindOfClass:NSString.class] ||
+        ![profile[@"public_key_sha256"] isKindOfClass:NSString.class] || [profile[@"account"] length] == 0 || [profile[@"account"] length] > 128) return NO;
+    NSData *der = [NSData dataWithContentsOfFile:[RPCReportDirectory stringByAppendingPathComponent:@"local-login-public-key.der"]];
+    if (!der || der.length > 4096) return NO;
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(der.bytes,(CC_LONG)der.length,digest);
+    NSMutableString *hex = [NSMutableString new]; for (NSUInteger i=0;i<sizeof(digest);i++) [hex appendFormat:@"%02x",digest[i]];
+    if (![hex isEqualToString:profile[@"public_key_sha256"]]) return NO;
+    NSDictionary *attributes = @{(__bridge id)kSecAttrKeyType:(__bridge id)kSecAttrKeyTypeRSA,(__bridge id)kSecAttrKeyClass:(__bridge id)kSecAttrKeyClassPublic};
+    CFErrorRef error = NULL;
+    SecKeyRef key = SecKeyCreateWithData((__bridge CFDataRef)der,(__bridge CFDictionaryRef)attributes,&error);
+    if (error) CFRelease(error);
+    if (!key) return NO;
+    if (SecKeyGetBlockSize(key) < 128 || SecKeyGetBlockSize(key) > 512 ||
+        !SecKeyIsAlgorithmSupported(key,kSecKeyOperationTypeEncrypt,kSecKeyAlgorithmRSAEncryptionPKCS1)) { CFRelease(key); return NO; }
+    Class bridge = NSClassFromString(@"_TtC13MHYPorteLogin14MHYPorteBridge");
+    SEL selector = NSSelectorFromString(@"loginWithAccount:password:completion:");
+    Method method = bridge ? class_getClassMethod(bridge,selector) : NULL;
+    NSMethodSignature *signature = method ? [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)] : nil;
+    if (signature.numberOfArguments != 5 || signature.methodReturnType[0] != 'v' ||
+        [signature getArgumentTypeAtIndex:2][0] != '@' || [signature getArgumentTypeAtIndex:3][0] != '@' ||
+        strcmp([signature getArgumentTypeAtIndex:4],"@?") != 0) { CFRelease(key); return NO; }
+    RPCLocalLoginKey = key; RPCLocalLoginAccount = [profile[@"account"] copy]; RPCLoginLock = [NSLock new];
+    RPCOriginalPorteLogin = method_setImplementation(method,(IMP)RPCLocalPorteLogin);
+    RPCRecord(@"local_login_adapter_registered",@{@"public_key_sha256":hex,@"key_bits":@(SecKeyGetBlockSize(key)*8),@"password_verification_bypassed":@NO});
+    return YES;
+}
+static NSData *RPCRewrapLocalLoginBody(NSURL *url, NSData *body) {
+    if (!RPCLocalRoutingEnabled || !RPCLoginLock || ![url.scheme isEqual:@"http"] ||
+        ![url.host isEqual:@"127.0.0.1"] || ![url.port isEqual:@8088] ||
+        ![url.path isEqual:@"/account/ma-cn-passport/app/loginByPassword"] || !body.length || body.length > 65536) return body;
+    id parsed = [NSJSONSerialization JSONObjectWithData:body options:NSJSONReadingMutableContainers error:nil];
+    if (![parsed isKindOfClass:NSMutableDictionary.class] || ![parsed[@"account"] isKindOfClass:NSString.class] ||
+        ![parsed[@"password"] isKindOfClass:NSString.class]) return body;
+    [RPCLoginLock lock];
+    NSDictionary *pending = RPCPendingLogin;
+    RPCPendingLogin = nil;
+    BOOL valid = pending && RPCPendingLoginExpires > NSProcessInfo.processInfo.systemUptime &&
+        RPCLoginBlockedUntil <= NSProcessInfo.processInfo.systemUptime;
+    [RPCLoginLock unlock];
+    if (!valid) return body;
+    parsed[@"account"] = pending[@"account"]; parsed[@"password"] = pending[@"password"];
+    NSData *rewritten = [NSJSONSerialization dataWithJSONObject:parsed options:0 error:nil];
+    if (rewritten) RPCRecord(@"local_login_body_prepared",@{@"path":url.path,@"one_use":@YES});
+    return rewritten ?: body;
+}
 // NSURL factory hooks do not see Swift URL / CoreFoundation URL construction.
 // Route again at the NSURLSession task boundary, retaining the original request
 // method, body, timeout, cache policy and completion/delegate behavior.
-static NSURLRequest *RPCRewriteRequest(NSURLRequest *request) {
+static NSURLRequest *RPCRouteRequestOnly(NSURLRequest *request) {
     if (![request isKindOfClass:NSURLRequest.class]) return request;
     NSURL *logicalURL = request.URL;
     NSString *hostHeader = [request valueForHTTPHeaderField:@"Host"].lowercaseString;
@@ -329,6 +424,14 @@ static NSURLRequest *RPCRewriteRequest(NSURLRequest *request) {
     [copy setValue:nil forHTTPHeaderField:@"Host"];
     RPCRecord(@"request_routed_at_session", @{@"path":logicalURL.path,@"host":logicalURL.host.lowercaseString,
         @"method":request.HTTPMethod ?: @"GET",@"port":@8088});
+    return copy;
+}
+static NSURLRequest *RPCRewriteRequest(NSURLRequest *request) {
+    NSURLRequest *routed = RPCRouteRequestOnly(request);
+    NSData *body = RPCRewrapLocalLoginBody(routed.URL,routed.HTTPBody);
+    if (body == routed.HTTPBody) return routed;
+    NSMutableURLRequest *copy = [routed mutableCopy]; copy.HTTPBody = body;
+    [copy setValue:nil forHTTPHeaderField:@"Content-Length"];
     return copy;
 }
 typedef void (^RPCCompletion)(NSData *, NSURLResponse *, NSError *);
@@ -384,12 +487,21 @@ static NSUInteger RPCInstallSessionRouting(void) {
             IMP original = method_getImplementation(method), replacement = NULL;
             if (upload && withCompletion) {
                 replacement = imp_implementationWithBlock(^id(id receiver, NSURLRequest *request, NSData *body, RPCCompletion completion) {
-                    NSURLRequest *routed = RPCRewriteRequest(request);
-                    return ((id (*)(id,SEL,id,id,id))original)(receiver,selector,routed,body,RPCResponseAudit(routed.URL,completion));
+                    NSURLRequest *routed = RPCRouteRequestOnly(request);
+                    NSData *encryptedBody = RPCRewrapLocalLoginBody(routed.URL,body);
+                    if (encryptedBody != body) {
+                        NSMutableURLRequest *copy = [routed mutableCopy]; [copy setValue:nil forHTTPHeaderField:@"Content-Length"]; routed = copy;
+                    }
+                    return ((id (*)(id,SEL,id,id,id))original)(receiver,selector,routed,encryptedBody,RPCResponseAudit(routed.URL,completion));
                 });
             } else if (upload) {
                 replacement = imp_implementationWithBlock(^id(id receiver, NSURLRequest *request, NSData *body) {
-                    return ((id (*)(id,SEL,id,id))original)(receiver,selector,RPCRewriteRequest(request),body);
+                    NSURLRequest *routed = RPCRouteRequestOnly(request);
+                    NSData *encryptedBody = RPCRewrapLocalLoginBody(routed.URL,body);
+                    if (encryptedBody != body) {
+                        NSMutableURLRequest *copy = [routed mutableCopy]; [copy setValue:nil forHTTPHeaderField:@"Content-Length"]; routed = copy;
+                    }
+                    return ((id (*)(id,SEL,id,id))original)(receiver,selector,routed,encryptedBody);
                 });
             } else if (withCompletion) {
                 replacement = imp_implementationWithBlock(^id(id receiver, id input, RPCCompletion completion) {
@@ -447,6 +559,7 @@ __attribute__((constructor)) static void RPCInitialize(void) {
         RPCObserveClassMethod(NSURL.class,@selector(URLWithString:),(IMP)RPCURL,3,&RPCOriginalURL);
         RPCObserveClassMethod(NSURL.class,@selector(URLWithString:relativeToURL:),(IMP)RPCRelativeURL,4,&RPCOriginalRelativeURL);
         RPCInstallSessionRouting();
+        RPCConfigureLocalLogin();
         Class crypto = NSClassFromString(@"MiHoYoRSAEncryptor");
         RPCObserveClassMethod(crypto,NSSelectorFromString(@"encryptString:publicKey:"),(IMP)RPCRSAString,4,&RPCOriginalRSAString);
         RPCObserveClassMethod(crypto,NSSelectorFromString(@"encryptData:publicKey:"),(IMP)RPCRSAData,4,&RPCOriginalRSAData);
