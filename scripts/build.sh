@@ -394,20 +394,30 @@ q=pathlib.Path('build/ObserverFixtureWrong.app')
 shutil.copytree(p,q,dirs_exist_ok=True)
 info['CFBundleIdentifier']='local.astaps.ObserverFixtureWrong'
 (q/'Info.plist').write_bytes(plistlib.dumps(info))
+# A routing opt-in cannot override the exact configured bundle boundary.
+(q/'RuntimeIntegration.plist').write_bytes(plistlib.dumps({'BundlePrefix':'local.astaps.ObserverFixture',
+    'ClientVersion':'1.0','ClientBuild':'1','LocalRoutingEnabled':True}))
 r=pathlib.Path('build/ObserverFixtureEmbedded.app')
 shutil.copytree(p,r,dirs_exist_ok=True)
 info['CFBundleIdentifier']='local.astaps.ObserverFixture.Embedded'
 (r/'Info.plist').write_bytes(plistlib.dumps(info))
 shutil.copytree('build/runtime',r/'LocalRuntime/runtime',dirs_exist_ok=True)
 for name in ['DeviceProbe.jar','RuntimePatch.jar']: shutil.copy2('build/'+name,r/'LocalRuntime'/name)
+s=pathlib.Path('build/ObserverFixtureRouting.app')
+shutil.copytree(p,s,dirs_exist_ok=True)
+info['CFBundleIdentifier']='local.astaps.ObserverFixture.Routing'
+info['NSAppTransportSecurity']={'NSAllowsArbitraryLoads':True}
+(s/'Info.plist').write_bytes(plistlib.dumps(info))
+(s/'RuntimeIntegration.plist').write_bytes(plistlib.dumps({'BundlePrefix':'local.astaps.ObserverFixture',
+    'ClientVersion':'1.0','ClientBuild':'1','LocalRoutingEnabled':True}))
 PY
-for fixture_path in "$fixture" "$project_root/build/ObserverFixtureWrong.app" "$project_root/build/ObserverFixtureEmbedded.app"; do
+for fixture_path in "$fixture" "$project_root/build/ObserverFixtureWrong.app" "$project_root/build/ObserverFixtureEmbedded.app" "$project_root/build/ObserverFixtureRouting.app"; do
   codesign --force --sign - "$fixture_path/Frameworks/RuntimeHost.dylib"
   codesign --force --sign - "$fixture_path/Frameworks/RuntimeClientProbe.dylib"
   codesign --force --sign - "$fixture_path"
 done
 python3 - <<'PY'
-import json,os,pathlib,re,shutil,subprocess,time
+import http.server,json,os,pathlib,re,shutil,subprocess,threading,time
 output=pathlib.Path('build/simulator-results');output.mkdir(parents=True,exist_ok=True)
 def log(message):
     print(message,flush=True)
@@ -440,15 +450,28 @@ fixture_containers={}
 test_started=time.time()
 observer_results=[]
 result={'passed':False,'error':'No report before timeout'}
+class RoutingMock(http.server.BaseHTTPRequestHandler):
+    def log_message(self,*args): pass
+    def do_POST(self):
+        size=int(self.headers.get('Content-Length','0'))
+        body=self.rfile.read(size) if 0<=size<=4096 else b''
+        passed=(self.path=='/hk4e_cn/mdk/shield/api/login?token=FIXTURE_INPUT_NEVER_RECORD&encoded=a%2Bb%2Fc%25'
+            and body==b'{"fixture":"not-an-account","nonce":"routing-test"}'
+            and self.headers.get('Content-Type')=='application/json')
+        data=json.dumps({'passed':passed}).encode()
+        self.send_response(200);self.send_header('Content-Type','application/json')
+        self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+mock=http.server.ThreadingHTTPServer(('127.0.0.1',8088),RoutingMock)
+threading.Thread(target=mock.serve_forever,daemon=True).start()
 try:
     if device['state']!='Booted': command('xcrun','simctl','boot',udid)
     command('xcrun','simctl','bootstatus',udid,'-b',timeout=240)
-    for variant,arguments in [('ObserverFixture',[]),('ObserverFixtureWrong',['--expect-observer-disabled']),('ObserverFixtureEmbedded',['--probe-embedded-runtime'])]:
-        bundle='local.astaps.ObserverFixture.Embedded' if variant=='ObserverFixtureEmbedded' else 'local.astaps.'+variant
+    for variant,arguments in [('ObserverFixture',[]),('ObserverFixtureWrong',['--expect-observer-disabled']),('ObserverFixtureEmbedded',['--probe-embedded-runtime']),('ObserverFixtureRouting',['--expect-local-routing'])]:
+        bundle={'ObserverFixtureEmbedded':'local.astaps.ObserverFixture.Embedded','ObserverFixtureRouting':'local.astaps.ObserverFixture.Routing'}.get(variant,'local.astaps.'+variant)
         command('xcrun','simctl','install',udid,'build/'+variant+'.app')
         fixture_container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,bundle,'data').stdout.strip())
         fixture_containers[variant]=fixture_container
-        for old in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/host-status.json','EmbeddedRuntime/native-lookup.json']:
+        for old in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','routing-http-fixture.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/host-status.json','EmbeddedRuntime/native-lookup.json']:
             stale=fixture_container/'Documents'/old
             if stale.is_file(): stale.unlink()
         command('xcrun','simctl','launch','--terminate-running-process',udid,bundle,*arguments,timeout=60)
@@ -462,6 +485,19 @@ try:
         (output/(variant+'.json')).write_text(json.dumps(fixture_result,indent=2))
         observations=fixture_container/'Documents/RuntimeIntegration/client-observations.json'
         if observations.is_file(): shutil.copy2(observations,output/(variant+'-observations.json'))
+        if variant=='ObserverFixtureRouting':
+            http_report=fixture_container/'Documents/routing-http-fixture.json'
+            for _ in range(15):
+                if http_report.is_file(): break
+                time.sleep(1)
+            http_result=json.loads(http_report.read_text()) if http_report.is_file() else {'passed':False,'error':'No loopback HTTP report'}
+            fixture_result['loopback_http']=http_result
+            fixture_result['passed']=fixture_result.get('passed') is True and http_result.get('passed') is True
+            if observations.is_file():
+                raw=observations.read_text()
+                fixture_result['observations_exclude_sensitive_input']=all(x not in raw for x in ['FIXTURE_INPUT_NEVER_RECORD','token=','encoded=','routing-test','not-an-account'])
+                fixture_result['passed'] &= fixture_result['observations_exclude_sensitive_input']
+            (output/(variant+'.json')).write_text(json.dumps(fixture_result,indent=2))
         if variant=='ObserverFixtureEmbedded':
             embedded_report=fixture_container/'Documents/embedded-fixture.json'
             for _ in range(120):
@@ -489,12 +525,13 @@ try:
     result['checksum_benchmark']=json.loads(benchmark.read_text()) if benchmark.is_file() else {'passed':False,'error':'Missing checksum benchmark'}
     parser_report=container/'Documents/background-parser-tests.json'
     result['background_parser']=json.loads(parser_report.read_text()) if parser_report.is_file() else {'passed':False,'error':'Missing parser tests'}
-    result['passed']=result.get('passed') is True and result['checksum_benchmark'].get('passed') is True and result['background_parser'].get('passed') is True and len(observer_results)==3 and all(x.get('passed') is True for x in observer_results)
+    result['passed']=result.get('passed') is True and result['checksum_benchmark'].get('passed') is True and result['background_parser'].get('passed') is True and len(observer_results)==4 and all(x.get('passed') is True for x in observer_results)
 except Exception as failure:
     result={'passed':False,'error':repr(failure)}
 finally:
+    mock.shutdown();mock.server_close()
     for variant,fixture_container in fixture_containers.items():
-        for relative in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/host-status.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/jvm-output.log','EmbeddedRuntime/native-lookup.json']:
+        for relative in ['observer-fixture.json','embedded-fixture.json','embedded-request.json','routing-http-fixture.json','RuntimeIntegration/client-observations.json','EmbeddedRuntime/host-status.json','EmbeddedRuntime/runtime-probe.json','EmbeddedRuntime/jvm-output.log','EmbeddedRuntime/native-lookup.json']:
             source=fixture_container/'Documents'/relative
             if source.is_file(): shutil.copy2(source,output/(variant+'-'+source.name))
     crash_directory=pathlib.Path.home()/'Library/Logs/DiagnosticReports'
