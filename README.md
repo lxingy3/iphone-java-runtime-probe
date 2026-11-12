@@ -5,6 +5,16 @@ Only these eight source files belong in the public repository. No game resources
 account snapshot, server private keys, signing credentials, or personal device identifiers are included.
 The private server payload is transferred locally over USB and must not be uploaded here.
 
+The current optional client probe adds an explicit `LocalRoutingEnabled` switch, off by
+default. Within the configured bundle/version boundary it redirects a narrow allowlist
+of login and dispatch URL paths to HTTP loopback port 8088. Resource URLs, unrelated
+hosts, unsupported schemes/ports, and user-info URLs retain their original destination.
+The original RSA calls and system TLS validation are unchanged. A fourth simulator
+fixture checks URL/query preservation and sends a synthetic POST to a loopback mock,
+verifying the method, body and encoded query. These checks do not establish that a
+real game uses this network path, accepts server signatures, or can enter the world.
+Real native gameplay remains unverified.
+
 ## Verified results
 
 On November 11, 2026, version 0.1 passed all twelve runtime checks on a physical
@@ -67,7 +77,8 @@ Compiled symbols do not establish runtime coexistence, login, signing or gamepla
 
 The optional `RuntimeHost.dylib` and `RuntimeClientProbe.dylib` package the same host
 and a local-only observation mode for a separately installed, explicitly configured client.
-The observer has no login redirect, trust bypass, signature bypass or key replacement.
+Observation mode preserves destinations; an explicit opt-in enables only the loopback
+URL routes described above. There is no trust bypass, signature bypass or key replacement.
 It records allowlisted URL hosts/paths and fingerprints of public keys, never credentials,
 request headers or bodies. It needs a matching `RuntimeIntegration.plist` bundle prefix,
 version and build. Merely loading the library does not start Java. An additional local
@@ -110,9 +121,10 @@ Select `simulator` for the iPhone Duo simulator and automatic runtime checks.
 Select `simulator-standard` to isolate generic runtime tests on a non-Duo iPhone.
 That profile provides no Duo layout or folding evidence.
 Results include a screenshot, runtime reports, window geometry, and command help.
-Three small UIKit fixtures also load the actual observation libraries. They check original
+Four small UIKit fixtures also load the actual observation libraries. They check original
 method and URL results, URL filtering, omission of input/query/key contents, and rejection
-of an unexpected host bundle. The third starts the Java probe through the dynamic host
+of an unexpected host bundle. The routing fixture verifies a real synthetic HTTP request
+against a local mock. The third starts the Java probe through the dynamic host
 library in the same process and checks that a second JVM request is rejected.
 The fixtures contain no game code. Passing them does not
 verify library loading, signing, or SDK behavior inside a real game.
