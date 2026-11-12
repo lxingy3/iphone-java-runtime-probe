@@ -52,6 +52,122 @@ subprocess.run(['xcrun','clang','-Wall','-Wextra','-Werror','build/directory-ide
 subprocess.run(['build/directory-identity-test'],check=True)
 pathlib.Path('build/directory-identity-test.json').write_text(json.dumps({'passed':True,'legacy_alias_rejection_reproduced':True,'same_directory_alias_accepted':True,'different_directory_rejected':True,'missing_path_rejected':True,'regular_file_rejected':True,'actual_game_tested':False},indent=2))
 PY
+# Exercise the production NSURLSession boundary with URLs constructed through
+# CoreFoundation (the factory-only observer misses this path). The legacy run
+# creates/cancels tasks only; it never sends a request to an external server.
+python3 - <<'PY'
+import http.server,json,pathlib,subprocess,threading
+source=pathlib.Path('App/main.m').read_text()
+begin=source.index('static NSString *RPCReportDirectory;')
+end=source.index('static void RPCLaunched(void)',begin)
+production=source[begin:end]
+harness=r'''
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+#include <CommonCrypto/CommonDigest.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <assert.h>
+PRODUCTION
+static NSURL *FixtureURL(NSString *text) {
+    return CFBridgingRelease(CFURLCreateWithString(kCFAllocatorDefault,(__bridge CFStringRef)text,NULL));
+}
+int main(int argc,char **argv) { @autoreleasepool {
+    BOOL legacy = argc > 1 && strcmp(argv[1],"legacy")==0;
+    RPCLocalRoutingEnabled = YES;
+    RPCReportDirectory = [@"build/RuntimeHostKit" stringByAppendingPathComponent:legacy ? @"legacy-routing" : @"session-routing"];
+    [NSFileManager.defaultManager createDirectoryAtPath:RPCReportDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+    RPCReportQueue = dispatch_queue_create("fixture.routing.logs",DISPATCH_QUEUE_SERIAL);
+    RPCEvents = [NSMutableArray new]; RPCSeen = [NSMutableSet new];
+    RPCObserveClassMethod(NSURL.class,@selector(URLWithString:),(IMP)RPCURL,3,&RPCOriginalURL);
+    RPCObserveClassMethod(NSURL.class,@selector(URLWithString:relativeToURL:),(IMP)RPCRelativeURL,4,&RPCOriginalRelativeURL);
+    if (!legacy) assert(RPCInstallSessionRouting() > 0);
+    NSURL *url = FixtureURL(@"https://passport-api.mihoyo.com/account/ma-cn-passport/app/loginByPassword?encoded=a%2Bb%2Fc%25&nonce=FIXTURE_SECRET");
+    assert([url.host isEqual:@"passport-api.mihoyo.com"]);
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:7];
+    request.HTTPMethod = @"POST";
+    request.HTTPBody = [@"FIXTURE_BODY_SECRET" dataUsingEncoding:NSUTF8StringEncoding];
+    [request setValue:@"application/octet-stream" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:@"FIXTURE_HEADER_SECRET" forHTTPHeaderField:@"X-Fixture"];
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    __block NSUInteger completions = 0;
+    __block BOOL httpPassed = NO;
+    NSURLSessionDataTask *task = [session dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error) {
+        completions++;
+        NSDictionary *body = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        httpPassed = !error && [(NSHTTPURLResponse *)response statusCode]==200 && [body[@"fixture_passed"] isEqual:@YES];
+        dispatch_semaphore_signal(done);
+    }];
+    NSString *expected = legacy ? @"passport-api.mihoyo.com" : @"127.0.0.1";
+    assert([task.currentRequest.URL.host isEqual:expected]);
+    assert([request.URL.host isEqual:@"passport-api.mihoyo.com"]);
+    assert([task.currentRequest.HTTPMethod isEqual:request.HTTPMethod]);
+    assert([task.currentRequest.HTTPBody isEqual:request.HTTPBody]);
+    assert(task.currentRequest.timeoutInterval == request.timeoutInterval);
+    assert(task.currentRequest.cachePolicy == request.cachePolicy);
+    if (legacy) {
+        [task cancel];
+    } else {
+        assert([task.currentRequest.URL.absoluteString isEqual:@"http://127.0.0.1:8088/account/ma-cn-passport/app/loginByPassword?encoded=a%2Bb%2Fc%25&nonce=FIXTURE_SECRET"]);
+        [task resume];
+        assert(dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+        assert(httpPassed && completions==1);
+        NSArray *tasks = @[[session dataTaskWithRequest:request],
+            [session dataTaskWithURL:url],
+            [session dataTaskWithURL:url completionHandler:^(NSData *d,NSURLResponse *r,NSError *e) {}],
+            [session uploadTaskWithRequest:request fromData:request.HTTPBody],
+            [session uploadTaskWithRequest:request fromData:request.HTTPBody completionHandler:^(NSData *d,NSURLResponse *r,NSError *e) {}],
+            [NSURLSession.sharedSession dataTaskWithRequest:request]];
+        for (NSURLSessionTask *other in tasks) { assert([other.currentRequest.URL.host isEqual:@"127.0.0.1"]); [other cancel]; }
+        NSMutableURLRequest *dnsRequest = [request mutableCopy];
+        dnsRequest.URL = FixtureURL(@"https://192.0.2.1/account/ma-cn-passport/app/loginByPassword");
+        [dnsRequest setValue:@"passport-api.mihoyo.com" forHTTPHeaderField:@"Host"];
+        NSURLSessionTask *dnsTask = [session dataTaskWithRequest:dnsRequest];
+        assert([dnsTask.currentRequest.URL.host isEqual:@"127.0.0.1"] && ![dnsTask.currentRequest valueForHTTPHeaderField:@"Host"]);
+        [dnsTask cancel];
+        for (NSString *negative in @[@"https://example.test/account/ma-cn-passport/app/loginByPassword",
+            @"https://passport-api.mihoyo.com.evil.test/account/ma-cn-passport/app/loginByPassword",
+            @"https://autopatchcn.yuanshen.com/client/data.zip",@"https://passport-api.mihoyo.com/private-account-path",
+            @"https://passport-api.mihoyo.com:444/account/ma-cn-passport/app/loginByPassword"]) {
+            NSURLSessionTask *other = [session dataTaskWithURL:FixtureURL(negative)];
+            assert([other.currentRequest.URL.absoluteString isEqual:negative]); [other cancel];
+        }
+        RPCLocalRoutingEnabled = NO;
+        NSURLSessionTask *disabled = [session dataTaskWithRequest:request];
+        assert([disabled.currentRequest.URL.host isEqual:@"passport-api.mihoyo.com"]); [disabled cancel];
+    }
+    dispatch_sync(RPCReportQueue,^{});
+    NSString *raw = [NSString stringWithContentsOfFile:[RPCReportDirectory stringByAppendingPathComponent:@"client-observations.json"] encoding:NSUTF8StringEncoding error:nil] ?: @"";
+    for (NSString *secret in @[@"FIXTURE_SECRET",@"FIXTURE_BODY_SECRET",@"FIXTURE_HEADER_SECRET",@"FIXTURE_RESPONSE_SECRET",@"encoded=",@"nonce="])
+        assert(![raw containsString:secret]);
+    NSDictionary *report = @{@"passed":@YES,@"legacy_factory_bypass_reproduced":@(legacy),@"loopback_http_verified":@(!legacy && httpPassed),
+        @"request_body_method_query_preserved":@YES,@"input_request_unmodified":@YES,@"credentials_or_tokens_logged":@NO,
+        @"session_variants_tested":legacy ? @0 : @7,@"actual_game_tested":@NO};
+    [[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil]
+        writeToFile:[@"build/RuntimeHostKit" stringByAppendingPathComponent:legacy ? @"request-boundary-legacy.json" : @"request-boundary-regression.json"] atomically:YES];
+    [session invalidateAndCancel];
+    puts(legacy ? "factory-only bypass reproduced without network traffic" : "request boundary regression: PASS");
+    return 0;
+} }
+'''.replace('PRODUCTION',production)
+pathlib.Path('build/RuntimeHostKit').mkdir(exist_ok=True)
+pathlib.Path('build/request-boundary-test.m').write_text(harness)
+subprocess.run(['xcrun','clang','-fobjc-arc','-fblocks','-framework','Foundation','-Wno-deprecated-declarations','build/request-boundary-test.m','-o','build/request-boundary-test'],check=True)
+subprocess.run(['build/request-boundary-test','legacy'],check=True,timeout=20)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self,*args): pass
+    def do_POST(self):
+        body=self.rfile.read(int(self.headers.get('Content-Length','0')))
+        passed=(self.path=='/account/ma-cn-passport/app/loginByPassword?encoded=a%2Bb%2Fc%25&nonce=FIXTURE_SECRET'
+            and body==b'FIXTURE_BODY_SECRET' and self.headers.get('X-Fixture')=='FIXTURE_HEADER_SECRET')
+        data=json.dumps({'retcode':0,'fixture_passed':passed,'token':'FIXTURE_RESPONSE_SECRET'}).encode()
+        self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+server=http.server.ThreadingHTTPServer(('127.0.0.1',8088),Handler)
+threading.Thread(target=server.serve_forever,daemon=True).start()
+try: subprocess.run(['build/request-boundary-test','fixed'],check=True,timeout=30)
+finally: server.shutdown();server.server_close()
+PY
 sdk_name="${PROBE_SDK:-iphoneos}"
 # macOS ships Bash 3.2, whose nounset handling rejects empty array expansion.
 extra_target_flags=( --disable-warnings-as-errors )
