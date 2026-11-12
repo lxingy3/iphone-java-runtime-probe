@@ -874,7 +874,13 @@ if not devices: raise SystemExit('No available iPhone simulator runtime')
 profile=os.environ.get('PROBE_DEVICE_CLASS','duo')
 candidates=[d for d in devices if (d['name']!='iPhone Duo' if profile=='standard' else d['name']=='iPhone Duo')]
 if not candidates: raise SystemExit('No available iPhone simulator for profile '+profile)
-candidates.sort(key=lambda d:tuple(map(int,d['runtime'].split('.iOS-')[-1].split('-'))),reverse=True)
+# New device-specific runtimes append a model identifier after the numeric
+# iOS version; only the numeric version prefix participates in ordering.
+def runtime_version(device):
+    match=re.search(r'\.iOS-(\d+(?:-\d+)*)',device['runtime'])
+    if not match: raise ValueError('Unrecognized simulator runtime identifier')
+    return tuple(map(int,match.group(1).split('-')))
+candidates.sort(key=runtime_version,reverse=True)
 device=candidates[0];udid=device['udid']
 (output/'device.json').write_text(json.dumps({'name':device['name'],'runtime':device['runtime'],'profile':profile,'environment':'simulator'},indent=2))
 command('xcrun','simctl','help',check=False)
