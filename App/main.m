@@ -610,6 +610,16 @@ __attribute__((constructor)) static void RPCInitialize(void) {
 #include <string.h>
 #include <dlfcn.h>
 
+static NSArray<NSString *> *RPRuntimeMemoryArguments(BOOL server) {
+    NSMutableArray<NSString *> *arguments = [NSMutableArray arrayWithObject:server ? @"-Xmx2048m" : @"-Xmx256m"];
+#ifdef RP_EMBEDDED_LIBRARY
+    // Class metadata normally reserves 1 GiB of virtual addresses. Bound that
+    // reservation when coexisting with a host engine and WebKit; keep heap size.
+    [arguments addObject:@"-XX:CompressedClassSpaceSize=128m"];
+#endif
+    return arguments;
+}
+
 #ifdef RP_EMBEDDED_LIBRARY
 // The pinned STATIC_BUILD JVM calls dlopen(NULL, RTLD_FIRST) for its native
 // libraries. In a dylib host that incorrectly searches the main executable.
@@ -935,6 +945,8 @@ static BOOL ChecksumBenchmark(JNIEnv *env, jclass cls) {
         @"elapsed_seconds": @(self.startedAt ? -self.startedAt.timeIntervalSinceNow : 0),
         @"preparation_progress": @(self.preparationProgress),
         @"footprint_bytes": available ? @(memory.phys_footprint) : NSNull.null,
+        @"virtual_size_bytes": available ? @(memory.virtual_size) : NSNull.null,
+        @"resident_size_bytes": available ? @(memory.resident_size) : NSNull.null,
         @"ios": UIDevice.currentDevice.systemVersion,
         @"foreground": @(UIApplication.sharedApplication.applicationState == UIApplicationStateActive)
     });
@@ -1048,15 +1060,19 @@ static BOOL ChecksumBenchmark(JNIEnv *env, jclass cls) {
             if (!lookupPassed) { [self updatePhase:@"failed" status:@"内嵌运行环境缺少原生函数"]; return; }
 #endif
             fprintf(stderr, "Runtime: starting JNI_CreateJavaVM, mode=%s\n", server ? "server" : "probe");
-            NSArray<NSString *> *arguments = @[
+            NSMutableArray<NSString *> *arguments = [@[
                 [@"-Djava.home=" stringByAppendingString:runtimeHome],
                 [@"-Djava.class.path=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"DeviceProbe.jar"]],
                 [@"-Duser.dir=" stringByAppendingString:working], @"-Djava.awt.headless=true", @"-Xint",
-                server ? @"-Xmx2048m" : @"-Xmx256m", @"-Dfile.encoding=UTF-8",
+                @"-Dfile.encoding=UTF-8",
                 @"-Dlogback.configurationFile=prototype-logback.xml", @"-Diphone.prototype.verify=true",
                 [@"--patch-module=java.base=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"RuntimePatch.jar"]]
-            ];
-            JavaVMOption options[10] = {0};
+            ] mutableCopy];
+            [arguments addObjectsFromArray:RPRuntimeMemoryArguments(server)];
+            JavaVMOption options[16] = {0};
+            if (arguments.count > sizeof(options)/sizeof(options[0])) {
+                [self updatePhase:@"failed" status:@"运行环境参数数量异常"]; return;
+            }
             for (NSUInteger i = 0; i < arguments.count; i++) options[i].optionString = strdup(arguments[i].UTF8String);
             JavaVMInitArgs settings = {0}; settings.version = JNI_VERSION_1_8;
             settings.nOptions = (jint)arguments.count; settings.options = options; settings.ignoreUnrecognized = JNI_FALSE;
