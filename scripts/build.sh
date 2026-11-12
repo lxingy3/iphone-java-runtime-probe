@@ -64,6 +64,7 @@ production=source[begin:end]
 harness=r'''
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <Security/Security.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -153,7 +154,7 @@ int main(int argc,char **argv) { @autoreleasepool {
 '''.replace('PRODUCTION',production)
 pathlib.Path('build/RuntimeHostKit').mkdir(exist_ok=True)
 pathlib.Path('build/request-boundary-test.m').write_text(harness)
-subprocess.run(['xcrun','clang','-fobjc-arc','-fblocks','-framework','Foundation','-Wno-deprecated-declarations','build/request-boundary-test.m','-o','build/request-boundary-test'],check=True)
+subprocess.run(['xcrun','clang','-fobjc-arc','-fblocks','-framework','Foundation','-framework','Security','-Wno-deprecated-declarations','build/request-boundary-test.m','-o','build/request-boundary-test'],check=True)
 subprocess.run(['build/request-boundary-test','legacy'],check=True,timeout=20)
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args): pass
@@ -167,6 +168,169 @@ server=http.server.ThreadingHTTPServer(('127.0.0.1',8088),Handler)
 threading.Thread(target=server.serve_forever,daemon=True).start()
 try: subprocess.run(['build/request-boundary-test','fixed'],check=True,timeout=30)
 finally: server.shutdown();server.server_close()
+PY
+# Reproduce the SDK-key mismatch through the real bridge and task-boundary code.
+# The mock backend decrypts the on-wire RSA fields and verifies the password; a
+# wrong password must remain rejected. The generated fixture private key is kept
+# outside every uploaded artifact directory and is removed even if the test fails.
+python3 - <<'PY'
+import base64,http.server,json,pathlib,subprocess,threading
+source=pathlib.Path('App/main.m').read_text()
+begin=source.index('static NSString *RPCReportDirectory;')
+production=source[begin:source.index('static void RPCLaunched(void)',begin)]
+harness=r'''
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+#import <Security/Security.h>
+#include <CommonCrypto/CommonDigest.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <assert.h>
+PRODUCTION
+static BOOL FixtureUpload;
+static NSUInteger FixtureOriginalCalls;
+static NSString *FixtureExpectedAccount, *FixtureExpectedPassword;
+static NSData *FixtureSDKBody(void) {
+    return [NSJSONSerialization dataWithJSONObject:@{@"account":@"SDK_CIPHERTEXT_ACCOUNT",@"password":@"SDK_CIPHERTEXT_PASSWORD",@"extra":@{@"preserved":@YES}} options:0 error:nil];
+}
+static NSURL *FixtureURL(NSString *value) {
+    return CFBridgingRelease(CFURLCreateWithString(kCFAllocatorDefault,(__bridge CFStringRef)value,NULL));
+}
+@interface _TtC13MHYPorteLogin14MHYPorteBridge : NSObject
++ (void)loginWithAccount:(NSString *)account password:(NSString *)password completion:(void (^)(NSInteger))completion;
+@end
+@implementation _TtC13MHYPorteLogin14MHYPorteBridge
++ (void)loginWithAccount:(NSString *)account password:(NSString *)password completion:(void (^)(NSInteger))completion {
+    FixtureOriginalCalls++;
+    assert([account isEqual:FixtureExpectedAccount] && [password isEqual:FixtureExpectedPassword]);
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:FixtureURL(@"https://passport-api.mihoyo.com/account/ma-cn-passport/app/loginByPassword?fixture=1")];
+    request.HTTPMethod = @"POST";
+    NSData *body = FixtureSDKBody();
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:[NSString stringWithFormat:@"%lu",(unsigned long)body.length] forHTTPHeaderField:@"Content-Length"];
+    RPCCompletion handler = ^(NSData *data, NSURLResponse *response, NSError *error) {
+        assert(!error && [(NSHTTPURLResponse *)response statusCode]==200);
+        NSDictionary *answer = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        assert([answer[@"retcode"] isKindOfClass:NSNumber.class]);
+        completion([answer[@"retcode"] integerValue]);
+    };
+    NSURLSessionTask *task;
+    if (FixtureUpload) task = [NSURLSession.sharedSession uploadTaskWithRequest:request fromData:body completionHandler:handler];
+    else { request.HTTPBody = body; task = [NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:handler]; }
+    assert([task.currentRequest.URL.host isEqual:@"127.0.0.1"]); // No external fixture requests.
+    assert([request.URL.host isEqual:@"passport-api.mihoyo.com"]);
+    [task resume];
+}
+@end
+static NSInteger FixtureLogin(NSString *account, NSString *password, BOOL upload) {
+    FixtureExpectedAccount = account; FixtureExpectedPassword = password; FixtureUpload = upload;
+    NSUInteger before = FixtureOriginalCalls;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    __block NSInteger result = NSIntegerMax;
+    __block NSUInteger calls = 0;
+    [_TtC13MHYPorteLogin14MHYPorteBridge loginWithAccount:account password:password completion:^(NSInteger value) { result=value; calls++; dispatch_semaphore_signal(done); }];
+    assert(dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,10*NSEC_PER_SEC))==0);
+    assert(calls==1 && FixtureOriginalCalls==before+1);
+    return result;
+}
+int main(void) { @autoreleasepool {
+    RPCReportDirectory = @"build/local-login-fixture";
+    [NSFileManager.defaultManager createDirectoryAtPath:RPCReportDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+    RPCReportQueue = dispatch_queue_create("fixture.login.logs",DISPATCH_QUEUE_SERIAL);
+    RPCEvents = [NSMutableArray new]; RPCSeen = [NSMutableSet new]; RPCLocalRoutingEnabled = YES;
+    assert(RPCInstallSessionRouting()>0);
+    assert(!RPCConfigureLocalLogin());
+    NSDictionary *attributes = @{(__bridge id)kSecAttrKeyType:(__bridge id)kSecAttrKeyTypeRSA,(__bridge id)kSecAttrKeySizeInBits:@1024};
+    SecKeyRef privateKey = SecKeyCreateRandomKey((__bridge CFDictionaryRef)attributes,NULL); assert(privateKey);
+    SecKeyRef publicKey = SecKeyCopyPublicKey(privateKey); assert(publicKey);
+    NSData *privateDER = CFBridgingRelease(SecKeyCopyExternalRepresentation(privateKey,NULL));
+    NSData *publicDER = CFBridgingRelease(SecKeyCopyExternalRepresentation(publicKey,NULL));
+    assert([privateDER writeToFile:@"build/local-login-fixture/private.der" atomically:YES]);
+    assert([publicDER writeToFile:@"build/local-login-fixture/local-login-public-key.der" atomically:YES]);
+    assert(FixtureLogin(@"fixture-user",@"Fixture-Pass-42",NO)==-10); // Old SDK key/body is not decryptable.
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(publicDER.bytes,(CC_LONG)publicDER.length,digest);
+    NSMutableString *hex = [NSMutableString new]; for (NSUInteger i=0;i<sizeof(digest);i++) [hex appendFormat:@"%02x",digest[i]];
+    NSMutableDictionary *profile = [@{@"account":@"fixture-user",@"public_key_sha256":@"incorrect"} mutableCopy];
+    NSString *profileFile = @"build/local-login-fixture/local-login.json";
+    [[NSJSONSerialization dataWithJSONObject:profile options:0 error:nil] writeToFile:profileFile atomically:YES];
+    assert(!RPCConfigureLocalLogin());
+    profile[@"public_key_sha256"] = hex;
+    [[NSJSONSerialization dataWithJSONObject:profile options:0 error:nil] writeToFile:profileFile atomically:YES];
+    RPCLocalRoutingEnabled = NO; assert(!RPCConfigureLocalLogin()); RPCLocalRoutingEnabled = YES;
+    assert(RPCConfigureLocalLogin()); assert(RPCConfigureLocalLogin()); // Idempotent; original is not hooked twice.
+    assert(FixtureLogin(@"fixture-user",@"Fixture-Pass-42",NO)==0);
+    assert(FixtureLogin(@"fixture-user",@"Fixture-Wrong-42",YES)==-3208);
+    assert(FixtureLogin(@"other-user",@"Fixture-Pass-42",NO)==-10);
+    NSURL *localURL = FixtureURL(@"http://127.0.0.1:8088/account/ma-cn-passport/app/loginByPassword");
+    NSData *opaque = FixtureSDKBody();
+    RPCCaptureLocalLogin(@"fixture-user",@"Fixture-Pass-42");
+    assert(RPCRewrapLocalLoginBody(FixtureURL(@"https://example.test/account/ma-cn-passport/app/loginByPassword"),opaque)==opaque);
+    NSData *once = RPCRewrapLocalLoginBody(localURL,opaque); assert(once!=opaque);
+    assert(RPCRewrapLocalLoginBody(localURL,opaque)==opaque);
+    RPCCaptureLocalLogin(@"fixture-user",@"Fixture-Pass-42"); RPCPendingLoginExpires=0;
+    assert(RPCRewrapLocalLoginBody(localURL,opaque)==opaque);
+    RPCCaptureLocalLogin(@"fixture-user",@"Fixture-Pass-42");
+    RPCCaptureLocalLogin(@"fixture-user",@"Fixture-Wrong-42");
+    assert(RPCRewrapLocalLoginBody(localURL,opaque)==opaque && !RPCPendingLogin);
+    dispatch_sync(RPCReportQueue,^{});
+    NSString *raw = [NSString stringWithContentsOfFile:[RPCReportDirectory stringByAppendingPathComponent:@"client-observations.json"] encoding:NSUTF8StringEncoding error:nil] ?: @"";
+    for (NSString *secret in @[@"fixture-user",@"Fixture-Pass-42",@"Fixture-Wrong-42",@"SDK_CIPHERTEXT_ACCOUNT",@"SDK_CIPHERTEXT_PASSWORD"]) assert(![raw containsString:secret]);
+    NSDictionary *report = @{@"passed":@YES,@"legacy_decryption_error_reproduced":@YES,@"bridge_to_session_to_http_verified":@YES,
+        @"correct_password_accepted":@YES,@"wrong_password_rejected":@YES,@"public_key_hash_verified":@YES,@"one_use_and_expiry_verified":@YES,
+        @"overlapping_attempts_rejected":@YES,@"other_accounts_unchanged":@YES,@"callback_and_original_arguments_preserved":@YES,
+        @"credentials_or_tokens_logged":@NO,@"actual_game_tested":@NO};
+    assert([[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil] writeToFile:@"build/RuntimeHostKit/local-login-regression.json" atomically:YES]);
+    CFRelease(publicKey); CFRelease(privateKey);
+    puts("local login regression: PASS (legacy decryption error, correct password, wrong password, scoped one-use encryption)");
+    return 0;
+} }
+'''.replace('PRODUCTION',production)
+pathlib.Path('build/local-login-test.m').write_text(harness)
+subprocess.run(['xcrun','clang','-fobjc-arc','-fblocks','-framework','Foundation','-framework','Security','-Wno-deprecated-declarations','build/local-login-test.m','-o','build/local-login-test'],check=True)
+def der_value(data,pos):
+    tag=data[pos]; size=data[pos+1]; pos+=2
+    if size&128:
+        count=size&127
+        if not 0<count<=4: raise ValueError('DER length')
+        size=int.from_bytes(data[pos:pos+count],'big');pos+=count
+    end=pos+size
+    if end>len(data): raise ValueError('Truncated DER')
+    return tag,data[pos:end],end
+def decrypt(ciphertext):
+    raw=pathlib.Path('build/local-login-fixture/private.der').read_bytes()
+    tag,sequence,end=der_value(raw,0)
+    if tag!=48 or end!=len(raw): raise ValueError('RSA fixture format')
+    fields=[];pos=0
+    while pos<len(sequence):
+        tag,value,pos=der_value(sequence,pos)
+        if tag!=2: raise ValueError('RSA integer')
+        fields.append(int.from_bytes(value,'big'))
+    if len(fields)!=9 or fields[0]!=0: raise ValueError('RSA PKCS1 fixture')
+    modulus,exponent=fields[1],fields[3];size=(modulus.bit_length()+7)//8
+    encoded=base64.b64decode(ciphertext,validate=True)
+    if len(encoded)!=size or int.from_bytes(encoded,'big')>=modulus: raise ValueError('Ciphertext size')
+    block=pow(int.from_bytes(encoded,'big'),exponent,modulus).to_bytes(size,'big')
+    delimiter=block.find(b'\0',2)
+    if block[:2]!=b'\0\2' or delimiter<10: raise ValueError('PKCS1 padding')
+    return block[delimiter+1:].decode('utf-8')
+class LoginBackend(http.server.BaseHTTPRequestHandler):
+    def log_message(self,*args): pass
+    def do_POST(self):
+        code=-10
+        try:
+            body=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))))
+            if self.path!='/account/ma-cn-passport/app/loginByPassword?fixture=1' or body.get('extra')!={'preserved':True}: raise ValueError('Request mutated')
+            account,password=decrypt(body['account']),decrypt(body['password'])
+            code=0 if account=='fixture-user' and password=='Fixture-Pass-42' else -3208
+        except (ValueError,KeyError,UnicodeError): pass
+        result=json.dumps({'retcode':code}).encode()
+        self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(result)));self.end_headers();self.wfile.write(result)
+server=http.server.ThreadingHTTPServer(('127.0.0.1',8088),LoginBackend)
+threading.Thread(target=server.serve_forever,daemon=True).start()
+try: subprocess.run(['build/local-login-test'],check=True,timeout=40)
+finally:
+    server.shutdown();server.server_close()
+    pathlib.Path('build/local-login-fixture/private.der').unlink(missing_ok=True)
 PY
 sdk_name="${PROBE_SDK:-iphoneos}"
 # macOS ships Bash 3.2, whose nounset handling rejects empty array expansion.
@@ -457,7 +621,7 @@ assert any(line.rstrip().endswith(' _JNI_OnLoad_java') for line in symbols)
 PY
 xcrun --sdk "$sdk_name" clang -dynamiclib -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
   -fobjc-arc -fmodules -O2 -DRP_CLIENT_OBSERVER_ONLY=1 App/main.m "$kit/RuntimeHost.dylib" \
-  -framework UIKit -framework Foundation -install_name @executable_path/Frameworks/RuntimeClientProbe.dylib \
+  -framework UIKit -framework Foundation -framework Security -install_name @executable_path/Frameworks/RuntimeClientProbe.dylib \
   -o "$kit/RuntimeClientProbe.dylib"
 cat > "$kit/RuntimeHostKit.h" <<'HEADER'
 #import <Foundation/Foundation.h>
