@@ -134,6 +134,10 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         checks[@"authenticated_loopback_ready"]=@([service[@"ready"] boolValue]);
         checks[@"overlay_does_not_take_key_window"]=@(gameWindow.isKeyWindow && !overlay.isKeyWindow);
         checks[@"readiness_label"]=@([button.currentTitle isEqualToString:@"本机 · 就绪"]);
+        [controller setValue:@{@"ready":@YES,@"dps":@{@"active":@YES,@"remainingSeconds":@42,@"hitCount":@180,@"totalDamage":@12345678,@"averageDps":@685871}} forKey:@"service"];
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        UILabel *dpsLabel=[controller valueForKey:@"message"];
+        checks[@"live_dps_label"]=@(!dpsLabel.hidden && [dpsLabel.text containsString:@"42 秒"] && [dpsLabel.text containsString:@"180 次命中"]);
         UIView *root=[controller view];CGRect original=root.frame;
         NSMutableArray *layouts=[NSMutableArray new];BOOL within=YES;
         CGSize sizes[]={{375,812},{812,375},{768,1024},{1024,768}};

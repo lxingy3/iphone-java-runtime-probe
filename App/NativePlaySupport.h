@@ -91,6 +91,8 @@
     NSDictionary *host=RPHostSnapshot();
     BOOL failed=[host[@"phase"] isEqual:@"failed"];
     BOOL healthy=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<20 && [self.service[@"ready"] boolValue];
+    NSDictionary *dps=[self.service[@"dps"] isKindOfClass:NSDictionary.class]?self.service[@"dps"]:nil;
+    BOOL testing=healthy && [dps[@"active"] boolValue];
     NSInteger elapsed=(NSInteger)-self.began.timeIntervalSinceNow;
     NSString *title=healthy ? @"本机 · 就绪" : failed ? @"本机 · 异常" : @"本机 · 准备中";
     [self.button setTitle:title forState:UIControlStateNormal];
@@ -100,7 +102,13 @@
     else if(self.readyAt) self.message.text=@"  正在检查本机服务，请稍候。  ";
     else self.message.text=[NSString stringWithFormat:@"  正在准备世界 · 已用 %ld:%02ld  \n  请保持游戏在前台，等显示就绪再登录。  ",(long)elapsed/60,(long)elapsed%60];
     self.message.hidden=healthy && -self.readyAt.timeIntervalSinceNow>10;
-    if(++self.ticks%5==0 && !self.fetching) [self request:@"status" completion:^(NSDictionary *result){}];
+    if(testing){
+        self.message.hidden=NO;
+        self.message.text=[NSString stringWithFormat:@"  木桩 · 剩余 %@ 秒 · %@ 次命中  \n  总伤害 %.0f · 平均 DPS %.0f  ",
+                dps[@"remainingSeconds"]?:@0,dps[@"hitCount"]?:@0,[dps[@"totalDamage"] doubleValue],[dps[@"averageDps"] doubleValue]];
+        if(-self.lastResponse.timeIntervalSinceNow>3) self.message.text=@"  木桩统计正在同步…  ";
+    }
+    if((++self.ticks%5==0 || testing) && !self.fetching) [self request:@"status" completion:^(NSDictionary *result){}];
 }
 - (void)request:(NSString *)operation completion:(void (^)(NSDictionary *))completion {
     BOOL status=[operation isEqualToString:@"status"];
