@@ -15,8 +15,77 @@ static int RPDirectoriesMatch(const char *left, const char *right) {
 #import <Foundation/Foundation.h>
 #include <unistd.h>
 #include <dlfcn.h>
+#include <signal.h>
+#include <pthread.h>
+#include <sys/ucontext.h>
 extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
 extern NSDictionary *RPHostSnapshot(void);
+
+// Simulator fixture only: exercise a real synchronous native fault through the
+// installed JVM handler, then the host's preinstalled recovery handler. These
+// handlers are never compiled into the production embedding libraries.
+extern void RPCSignalFault(void);
+extern void RPCSignalFaultSite(void);
+extern void RPCSignalFaultResume(void);
+__asm__(".text\n.p2align 2\n"
+        ".globl _RPCSignalFault\n_RPCSignalFault:\nmov x0, #0\n"
+        ".globl _RPCSignalFaultSite\n_RPCSignalFaultSite:\nldr x0, [x0]\n"
+        ".globl _RPCSignalFaultResume\n_RPCSignalFaultResume:\nret\n");
+static volatile sig_atomic_t RPCFaultCount, RPCIllCount, RPCPipeCount;
+static volatile sig_atomic_t RPCSignalFixtureFailure;
+static BOOL RPCSignalBaselinePassed;
+static void RPCSignalHandler(int number, siginfo_t *info, void *context) {
+    (void)info;
+    ucontext_t *uc = (ucontext_t *)context;
+    if ((number == SIGSEGV || number == SIGBUS) && uc &&
+        __darwin_arm_thread_state64_get_pc(uc->uc_mcontext->__ss) == (uintptr_t)RPCSignalFaultSite) {
+        RPCFaultCount++;
+        __darwin_arm_thread_state64_set_pc_fptr(uc->uc_mcontext->__ss, (void *)RPCSignalFaultResume);
+    } else if (number == SIGILL) {
+        RPCIllCount++;
+    } else if (number == SIGPIPE) {
+        RPCPipeCount++;
+    } else {
+        // An unexpected fault must fail the fixture, never hide a real crash.
+        _exit(93);
+    }
+}
+static BOOL RPCInstallSignalFixture(void) {
+    struct sigaction action = {0};
+    action.sa_sigaction = RPCSignalHandler;
+    action.sa_flags = SA_SIGINFO;
+    sigemptyset(&action.sa_mask);
+    int signals[] = {SIGSEGV,SIGBUS,SIGILL,SIGPIPE};
+    for (size_t i=0; i<sizeof(signals)/sizeof(signals[0]); i++)
+        if (sigaction(signals[i],&action,NULL) != 0) return NO;
+    RPCSignalFault();
+    return RPCFaultCount == 1;
+}
+static void *RPCSignalWorker(void *unused) {
+    (void)unused;
+    for (int i=0; i<32; i++) {
+        RPCSignalFault();
+        if (raise(SIGILL) != 0 || raise(SIGPIPE) != 0) RPCSignalFixtureFailure = 1;
+    }
+    return NULL;
+}
+static NSDictionary *RPCRunSignalFixture(void) {
+    struct sigaction before = {0}, after = {0};
+    sigaction(SIGSEGV,NULL,&before);
+    BOOL jvmHandlerInstalled = (before.sa_flags & SA_SIGINFO) && before.sa_sigaction != RPCSignalHandler;
+    pthread_t worker;
+    int created = pthread_create(&worker,NULL,RPCSignalWorker,NULL);
+    int joined = created == 0 ? pthread_join(worker,NULL) : -1;
+    sigaction(SIGSEGV,NULL,&after);
+    BOOL passed = RPCSignalBaselinePassed && jvmHandlerInstalled && created == 0 && joined == 0 &&
+        !RPCSignalFixtureFailure && RPCFaultCount == 33 && RPCIllCount == 32 && RPCPipeCount == 32 &&
+        before.sa_sigaction == after.sa_sigaction;
+    return @{@"passed":@(passed),@"native_fault_before_jvm_recovered":@(RPCSignalBaselinePassed),
+        @"jvm_handler_installed_and_preserved":@(jvmHandlerInstalled && before.sa_sigaction == after.sa_sigaction),
+        @"synchronous_faults_recovered":@(RPCFaultCount),@"sigill_chained":@(RPCIllCount),
+        @"sigpipe_chained":@(RPCPipeCount),@"native_worker_joined":@(created == 0 && joined == 0),
+        @"actual_game_tested":@NO};
+}
 
 static void RPCFixtureHTTP(NSURL *url, NSString *documents) {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
@@ -127,6 +196,7 @@ static void RPCFixtureHTTP(NSURL *url, NSString *documents) {
             label.text = passed ? @"Observer fixture passed" : @"Observer fixture failed";
             if (passed && routing) RPCFixtureHTTP([NSURL URLWithString:@"https://hk4e-sdk.mihoyo.com/hk4e_cn/mdk/shield/api/login?token=FIXTURE_INPUT_NEVER_RECORD&encoded=a%2Bb%2Fc%25"],documents);
             if (passed && [NSProcessInfo.processInfo.arguments containsObject:@"--probe-embedded-runtime"]) {
+                RPCSignalBaselinePassed = RPCInstallSignalFixture();
                 // The host-local shim must not change the containing app's loader.
                 void *mainHandle = dlopen(NULL, RTLD_FIRST);
                 BOOL mainScopeUnchanged = mainHandle && dlsym(mainHandle,"JNI_OnLoad_java") == NULL;
@@ -149,8 +219,11 @@ static void RPCFixtureHTTP(NSURL *url, NSString *documents) {
                     BOOL repeatAccepted = RPHostStart(storage,resources,NO,&repeatError);
                     BOOL runtimePassed = mainScopeUnchanged && [runtime[@"passed"] boolValue] && [snapshot[@"jvm_start_count"] isEqual:@1] &&
                         [snapshot[@"pid"] isEqual:@(getpid())] && !repeatAccepted && repeatError != nil;
+                    NSDictionary *signals = runtimePassed ? RPCRunSignalFixture() : @{@"passed":@NO};
+                    runtimePassed &= [signals[@"passed"] boolValue];
                     NSDictionary *embedded = @{@"passed":@(runtimePassed),@"runtime":runtime ?: @{},
                         @"host":snapshot,@"same_process":@([snapshot[@"pid"] isEqual:@(getpid())]),
+                        @"native_signal_chaining":signals,
                         @"second_jvm_rejected":@(!repeatAccepted && repeatError != nil),
                         @"containing_app_loader_scope_unchanged":@(mainScopeUnchanged),@"actual_game_tested":@NO};
                     [[NSJSONSerialization dataWithJSONObject:embedded options:NSJSONWritingPrettyPrinted error:nil]
