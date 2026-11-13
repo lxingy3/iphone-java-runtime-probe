@@ -887,6 +887,12 @@ def runtime_version(device):
     if not match: raise ValueError('Unrecognized simulator runtime identifier')
     return tuple(map(int,match.group(1).split('-')))
 candidates.sort(key=runtime_version,reverse=True)
+if profile=='standard':
+    # Match the selected Xcode. iOS 27.2 stalled before any fixture executed
+    # on both pre-provisioned and fresh devices.
+    compatible=[d for d in candidates if runtime_version(d)==(27,1)]
+    if not compatible: raise SystemExit('Missing Xcode-matched iOS 27.1 simulator')
+    candidates=compatible
 device=candidates[0]
 # Pre-provisioned CI devices can report Booted while installd never responds.
 # Create an isolated device with the same observed type/runtime; do not erase
