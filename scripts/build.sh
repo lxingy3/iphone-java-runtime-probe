@@ -887,8 +887,16 @@ def runtime_version(device):
     if not match: raise ValueError('Unrecognized simulator runtime identifier')
     return tuple(map(int,match.group(1).split('-')))
 candidates.sort(key=runtime_version,reverse=True)
-device=candidates[0];udid=device['udid']
-(output/'device.json').write_text(json.dumps({'name':device['name'],'runtime':device['runtime'],'profile':profile,'environment':'simulator'},indent=2))
+device=candidates[0]
+# Pre-provisioned CI devices can report Booted while installd never responds.
+# Create an isolated device with the same observed type/runtime; do not erase
+# or modify the runner's existing devices to recover from an install timeout.
+types=json.loads(command('xcrun','simctl','list','devicetypes','--json').stdout)['devicetypes']
+device_type=next(t['identifier'] for t in types if t['name']==device['name'])
+udid=command('xcrun','simctl','create','RuntimeProbe-'+str(os.getpid()),device_type,device['runtime']).stdout.strip()
+assert re.fullmatch(r'[0-9A-Fa-f-]{36}',udid), 'Unexpected new simulator identifier'
+device=dict(device,udid=udid,state='Shutdown')
+(output/'device.json').write_text(json.dumps({'name':device['name'],'runtime':device['runtime'],'profile':profile,'environment':'simulator','freshDevice':True,'deviceType':device_type},indent=2))
 command('xcrun','simctl','help',check=False)
 command('xcrun','simctl','io',udid,'help',check=False)
 container=None
