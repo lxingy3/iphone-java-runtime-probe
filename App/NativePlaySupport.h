@@ -166,6 +166,8 @@
 @property(nonatomic,strong) NSDate *began;
 @property(nonatomic,strong) NSDate *readyAt;
 @property(nonatomic,strong) NSDate *lastResponse;
+@property(nonatomic,copy) NSString *lastResultId;
+@property(nonatomic,strong) NSDate *resultReceivedAt;
 @property(nonatomic,copy) NSString *storage;
 @property(nonatomic) BOOL fetching;
 @property(nonatomic) BOOL saving;
@@ -226,9 +228,14 @@
     if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) return;
     for(UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if(![scene isKindOfClass:UIWindowScene.class] || scene.activationState!=UISceneActivationStateForegroundActive) continue;
-        if(self.overlay.windowScene==(UIWindowScene *)scene) return;
+        if(self.overlay.windowScene==(UIWindowScene *)scene) {
+            CGRect bounds=((UIWindowScene *)scene).coordinateSpace.bounds;
+            if(!CGRectEqualToRect(self.overlay.frame,bounds)){self.overlay.frame=bounds;[self.view setNeedsLayout];}
+            return;
+        }
         self.overlay.hidden=YES;
         self.overlay=[[RPSOverlayWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+        self.overlay.frame=((UIWindowScene *)scene).coordinateSpace.bounds;
         self.overlay.windowLevel=UIWindowLevelAlert-1;
         self.overlay.backgroundColor=UIColor.clearColor; self.overlay.rootViewController=self;
         self.overlay.hidden=NO; return;
@@ -243,6 +250,7 @@
     BOOL testing=healthy && [dps[@"active"] boolValue];
     NSInteger elapsed=(NSInteger)-self.began.timeIntervalSinceNow;
     NSString *title=healthy ? @"本机 · 就绪" : failed ? @"本机 · 异常" : @"本机 · 准备中";
+    if(healthy && [self.service[@"lastError"] length])title=@"本机 · 保存待确认";
     [self.button setTitle:title forState:UIControlStateNormal];
     if(healthy && !self.readyAt) self.readyAt=NSDate.date;
     if(healthy) self.message.text=@"  服务已就绪，可以登录或点击进入。  \n  若仍有旧的网络提示，请点一次重试。  ";
@@ -252,9 +260,21 @@
     self.message.hidden=healthy && -self.readyAt.timeIntervalSinceNow>10;
     if(testing && ![self.service[@"hideDpsHud"] boolValue]){
         self.message.hidden=NO;
-        self.message.text=[NSString stringWithFormat:@"  木桩 · 剩余 %@ 秒 · %@ 次命中  \n  总伤害 %.0f · 平均 DPS %.0f  ",
-                dps[@"remainingSeconds"]?:@0,dps[@"hitCount"]?:@0,[dps[@"totalDamage"] doubleValue],[dps[@"averageDps"] doubleValue]];
-        if(-self.lastResponse.timeIntervalSinceNow>3) self.message.text=@"  木桩统计正在同步…  ";
+        NSString *clock=[dps[@"mode"] isEqual:@"boss"]?[NSString stringWithFormat:@"%@ · %.0f 秒",dps[@"title"]?:@"挑战",[dps[@"elapsedSeconds"] doubleValue]]:[NSString stringWithFormat:@"木桩 · 剩余 %@ 秒",dps[@"remainingSeconds"]?:@0];
+        self.message.text=[NSString stringWithFormat:@"  %@ · %@ 次命中  \n  总伤害 %.0f · 平均 DPS %.0f  ",clock,dps[@"hitCount"]?:@0,[dps[@"totalDamage"] doubleValue],[dps[@"averageDps"] doubleValue]];
+        if(-self.lastResponse.timeIntervalSinceNow>3 || [self.service[@"statisticsPending"] boolValue]) self.message.text=@"  战斗统计正在同步…  ";
+    }
+    NSDictionary *finished=[self.service[@"lastTrainingResult"] isKindOfClass:NSDictionary.class]?self.service[@"lastTrainingResult"]:nil;
+    NSString *resultId=finished[@"id"];
+    if(resultId.length && ![resultId isEqualToString:self.lastResultId]){
+        self.lastResultId=resultId;
+        NSISO8601DateFormatter *parser=[NSISO8601DateFormatter new];parser.formatOptions=NSISO8601DateFormatWithInternetDateTime|NSISO8601DateFormatWithFractionalSeconds;
+        NSDate *at=[parser dateFromString:finished[@"at"]?:@""];
+        if(at && [at compare:self.began]!=NSOrderedAscending)self.resultReceivedAt=NSDate.date;
+    }
+    if(!testing && healthy && self.resultReceivedAt && -self.resultReceivedAt.timeIntervalSinceNow<12 && ![self.service[@"hideDpsHud"] boolValue]){
+        self.message.hidden=NO;
+        self.message.text=[NSString stringWithFormat:@"  %@ · %@  \n  总伤害 %.0f · DPS %.0f · 在「成绩」查看占比  ",finished[@"title"]?:@"训练",finished[@"outcome"]?:@"完成",[finished[@"totalDamage"] doubleValue],[finished[@"averageDps"] doubleValue]];
     }
     if((++self.ticks%5==0 || testing) && !self.fetching) [self request:@"status" completion:^(NSDictionary *result){}];
 }
@@ -356,7 +376,8 @@
 - (void)showStatus {
     if(self.presentedViewController) return;
     NSString *state=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<20?@"本机服务已响应":@"尚未就绪，请保持前台等待";
-    NSString *text=[NSString stringWithFormat:@"%@\n最近保存：%@\n签名到期：%@",state,[self localDate:self.service[@"fullSaveAt"]],[self expiry]];
+    if([self.service[@"lastError"] length])state=@"上次保存未完成";
+    NSString *text=[NSString stringWithFormat:@"%@\n最近确认保存：%@\n签名到期：%@",state,[self localDate:self.service[@"fullSaveAt"]],[self expiry]];
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"本机游玩" message:text preferredStyle:UIAlertControllerStyleAlert];
     [menu addAction:[UIAlertAction actionWithTitle:@"木桩训练场" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:0];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"保存进度" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:1];}]];
