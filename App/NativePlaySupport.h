@@ -8,13 +8,16 @@
 @implementation RPSLocalArtwork
 - (void)webView:(WKWebView *)webView startURLSchemeTask:(id<WKURLSchemeTask>)task {
     NSURL *url=task.request.URL;
-    if(![url.host isEqual:@"local"]||![@[@"/training-assets/courtyard.png",@"/training-assets/portraits.png"] containsObject:url.path]){
+    BOOL font=[url.path isEqual:@"/training-assets/game-font.ttf"];
+    if(![url.host isEqual:@"local"]||(!font && ![@[@"/training-assets/courtyard.png",@"/training-assets/portraits.png"] containsObject:url.path])){
         [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];return;
     }
-    NSData *data=[NSData dataWithContentsOfFile:[self.documents stringByAppendingPathComponent:[url.path substringFromIndex:1]]];
+    // The font stays in the user's existing game bundle; it is not redistributed by the probe.
+    NSString *path=font?[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"miHoYoSDKAssets.bundle/font/zh-cn.ttf"]:[self.documents stringByAppendingPathComponent:[url.path substringFromIndex:1]];
+    NSData *data=[NSData dataWithContentsOfFile:path];
     if(!data){[task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];return;}
-    [task didReceiveResponse:[[NSURLResponse alloc] initWithURL:url MIMEType:@"image/png" expectedContentLength:data.length textEncodingName:nil]];
-    [task didReceiveData:data];[task didFinish];self.diagnostics[@"artworkLoaded"]=@YES;
+    [task didReceiveResponse:[[NSURLResponse alloc] initWithURL:url MIMEType:font?@"font/ttf":@"image/png" expectedContentLength:data.length textEncodingName:nil]];
+    [task didReceiveData:data];[task didFinish];self.diagnostics[font?@"gameFontLoaded":@"artworkLoaded"]=@YES;
 }
 - (void)webView:(WKWebView *)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task {}
 @end

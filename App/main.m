@@ -1418,10 +1418,6 @@ __attribute__((visibility("default"))) void RPHostSceneEvent(NSString *event) {
 - (void)cancelBackground {
     if (@available(iOS 26.0, *)) [RPBackgroundTrial.shared finish:@"cancelled_in_app" success:NO message:@"已结束本次后台测试；服务端仍遵循系统前后台规则。"];
 }
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    if ([NSProcessInfo.processInfo.arguments containsObject:@"--probe-auto-run"]) [self runProbe];
-}
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews]; if (!self.view.window) return;
     CGRect window = self.view.window.bounds, bounds = self.view.bounds; UIEdgeInsets safe = self.view.safeAreaInsets;
@@ -1490,7 +1486,13 @@ __attribute__((visibility("default"))) void RPHostSceneEvent(NSString *event) {
     }
     [self.window makeKeyAndVisible];
 }
-- (void)sceneDidBecomeActive:(UIScene *)scene { RPHostSceneEvent(@"scene_active"); }
+- (void)sceneDidBecomeActive:(UIScene *)scene {
+    RPHostSceneEvent(@"scene_active");
+    // The compact split view may show only the log column. Automation belongs
+    // to the scene lifecycle, not the visibility of the controls column.
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--probe-auto-run"])
+        [RuntimeSession.shared startServer:NO];
+}
 - (void)sceneWillResignActive:(UIScene *)scene { RPHostSceneEvent(@"scene_inactive"); }
 - (void)sceneDidEnterBackground:(UIScene *)scene { RPHostSceneEvent(@"scene_background"); }
 - (void)sceneWillEnterForeground:(UIScene *)scene { RPHostSceneEvent(@"scene_foreground"); }
