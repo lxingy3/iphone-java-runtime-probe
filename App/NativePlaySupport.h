@@ -106,6 +106,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 @property(nonatomic,strong) UIImageView *backdrop;
 @property(nonatomic,strong) UIButton *exitButton;
 @property(nonatomic,copy) NSString *initialSection;
+- (void)alignPageBackground;
 @end
 @implementation RPSBattlePanel
 - (void)loadView {
@@ -146,7 +147,21 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.web.frame=controls;
     self.exitButton.frame=CGRectMake(CGRectGetMaxX(controls)-54,controls.origin.y+10,44,44);
     self.diagnostics[@"controlRegion"]=NSStringFromCGRect(controls);self.diagnostics[@"regionCount"]=@(regions.count);
+    [self alignPageBackground];
     [self.web evaluateJavaScript:@"typeof glassLayout==='function'&&glassLayout()" completionHandler:nil];
+}
+- (void)alignPageBackground {
+    // The webpage occupies a safe pane, while the artwork covers the whole window.
+    // Use the same aspect-fill image coordinates in both surfaces to avoid seams.
+    CGSize image=self.backdrop.image.size,stage=self.view.bounds.size;
+    if(image.width<=0||image.height<=0||stage.width<=0||stage.height<=0)return;
+    CGFloat scale=MAX(stage.width/image.width,stage.height/image.height);
+    CGFloat width=image.width*scale,height=image.height*scale;
+    CGFloat x=(stage.width-width)/2-self.web.frame.origin.x,y=(stage.height-height)/2-self.web.frame.origin.y;
+    NSString *script=[NSString stringWithFormat:@"(()=>{if(!document.body)return false;document.documentElement.style.background='transparent';Object.assign(document.body.style,{backgroundSize:'%.4fpx %.4fpx',backgroundPosition:'%.4fpx %.4fpx',backgroundAttachment:'fixed',backgroundRepeat:'no-repeat'});return true})()",width,height,x,y];
+    [self.web evaluateJavaScript:script completionHandler:^(id value,NSError *error){
+        self.diagnostics[@"backgroundAligned"]=@(!error&&[value boolValue]);
+    }];
 }
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
@@ -167,7 +182,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     decision(allowed?WKNavigationActionPolicyAllow:WKNavigationActionPolicyCancel);
 }
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
-    self.diagnostics[@"finished"]=@YES;[webView evaluateJavaScript:@"glassLayout()" completionHandler:nil];
+    self.diagnostics[@"finished"]=@YES;[self alignPageBackground];[webView evaluateJavaScript:@"glassLayout()" completionHandler:nil];
     if([self.initialSection isEqual:@"results"])[webView evaluateJavaScript:@"openModal('resultsModal')" completionHandler:nil];
     else if([@[@"target",@"party",@"display",@"supplies",@"timing"] containsObject:self.initialSection]){
         NSString *code=[NSString stringWithFormat:@"openTrainingSection('%@')",self.initialSection];[webView evaluateJavaScript:code completionHandler:nil];

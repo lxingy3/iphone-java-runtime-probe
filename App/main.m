@@ -206,6 +206,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
                         checks[@"training_loaded_authenticated_status"]=@(!error && [render[@"ready"] isEqual:@"世界已连接"] && ![render[@"start"] boolValue] && [render[@"bosses"] intValue]==2 && ![render[@"overflow"] boolValue]);
                         NSDictionary *page=[panel valueForKey:@"diagnostics"];
                         checks[@"single_surface_artwork_and_native_exit"]=@([render[@"singleSurface"] boolValue] && [page[@"artworkLoaded"] boolValue] && [panel valueForKey:@"exitButton"]!=nil);
+                        checks[@"safe_pane_background_aligned"]=@([page[@"backgroundAligned"] boolValue]);
                         NSData *shot=[renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *ctx){[overlay drawViewHierarchyInRect:overlay.bounds afterScreenUpdates:YES];}];
                         [shot writeToFile:[documents stringByAppendingPathComponent:@"training-panel.png"] atomically:YES];
                         [web evaluateJavaScript:@"document.getElementById('start').click()" completionHandler:nil];
