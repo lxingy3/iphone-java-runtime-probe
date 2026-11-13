@@ -806,7 +806,7 @@ for label,sdk in [('Legacy',0x1a0200),('Modern',0x1b0100)]:
         offset+=size
     assert found==1
     root=pathlib.Path('build/DuoGeometry'+label+'.app');(root/'DuoGeometry').write_bytes(data)
-    info={'CFBundleExecutable':'DuoGeometry','CFBundleIdentifier':'local.astaps.DuoGeometry'+label,'CFBundleName':'DuoGeometry'+label,'CFBundlePackageType':'APPL','CFBundleShortVersionString':'1','CFBundleVersion':'1','MinimumOSVersion':'18.5','UIDeviceFamily':[1,2],'LSRequiresIPhoneOS':True,'UIRequiresFullScreen':True,'UIStatusBarHidden':True,'UISupportedInterfaceOrientations':['UIInterfaceOrientationLandscapeRight','UIInterfaceOrientationLandscapeLeft'],'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False,'UISceneConfigurations':{'UIWindowSceneSessionRoleApplication':[{'UISceneClassName':'UIWindowScene','UISceneConfigurationName':'Geometry','UISceneDelegateClassName':'DuoGeometryScene'}]}}}
+    info={'CFBundleExecutable':'DuoGeometry','CFBundleIdentifier':'local.astaps.DuoGeometry'+label,'CFBundleName':'DuoGeometry'+label,'CFBundlePackageType':'APPL','CFBundleShortVersionString':'1','CFBundleVersion':'1','MinimumOSVersion':'18.5','UIDeviceFamily':[1,2],'LSRequiresIPhoneOS':True,'UIRequiresFullScreen':True,'UILaunchScreen':{},'UIStatusBarHidden':True,'UISupportedInterfaceOrientations':['UIInterfaceOrientationLandscapeRight','UIInterfaceOrientationLandscapeLeft'],'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False,'UISceneConfigurations':{'UIWindowSceneSessionRoleApplication':[{'UISceneClassName':'UIWindowScene','UISceneConfigurationName':'Geometry','UISceneDelegateClassName':'DuoGeometryScene'}]}}}
     (root/'Info.plist').write_bytes(plistlib.dumps(info))
 PY
 codesign --force --sign - build/DuoGeometryLegacy.app
@@ -982,10 +982,11 @@ try:
             if evidence.exists():break
             time.sleep(1)
         geometry[label]=json.loads(evidence.read_text())
-        command('xcrun','simctl','io',udid,'screenshot',str(output/('duo-sdk-'+label+'.png')),check=False,timeout=30)
+        command('xcrun','simctl','io',udid,'screenshot','--display=3',str(output/('duo-sdk-'+label+'.png')),check=False,timeout=30)
         command('xcrun','simctl','terminate',udid,bundle,check=False,timeout=15)
     geometry['modernWindowFillsDisplay']=geometry['Modern']['windowAreaFraction']>.97
-    geometry['compatibilityGateObserved']=geometry['Modern']['windowAreaFraction']>geometry['Legacy']['windowAreaFraction']+.01
+    geometry['logicalAreaGain']=(geometry['Modern']['window'][0]*geometry['Modern']['window'][1])/(geometry['Legacy']['window'][0]*geometry['Legacy']['window'][1])
+    geometry['compatibilityGateObserved']=geometry['logicalAreaGain']>1.1
     geometry['actualGameTested']=False
     (output/'duo-sdk-compatibility.json').write_text(json.dumps(geometry,indent=2))
     for variant,arguments in [('ObserverFixture',[]),('ObserverFixtureWrong',['--expect-observer-disabled']),('ObserverFixtureEmbedded',['--probe-embedded-runtime']),('ObserverFixtureRouting',['--expect-local-routing'])]:
