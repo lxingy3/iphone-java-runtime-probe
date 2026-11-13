@@ -1,25 +1,79 @@
 // Small host controls for a self-contained local runtime. No account credentials or external services.
 #import <WebKit/WebKit.h>
 
-@interface RPSBattlePanel : UIViewController <WKScriptMessageHandler,WKNavigationDelegate>
+@interface RPSBattlePanel : UIViewController <WKScriptMessageHandler,WKNavigationDelegate,WKURLSchemeHandler>
 @property(nonatomic,strong) WKWebView *web;
 @property(nonatomic,copy) NSString *storage;
 @property(nonatomic,weak) UIWindow *previousKey;
 @property(nonatomic,strong) NSMutableDictionary *diagnostics;
+@property(nonatomic,strong) UIImageView *backdrop;
+@property(nonatomic,strong) NSMutableArray<UIVisualEffectView *> *glassViews;
+@property(nonatomic,strong) UIButton *exitButton;
 @end
 @implementation RPSBattlePanel
 - (void)loadView {
     self.diagnostics=[NSMutableDictionary new];
     WKWebViewConfiguration *config=[WKWebViewConfiguration new];
+    [config setURLSchemeHandler:self forURLScheme:@"training"];
     [config.userContentController addScriptMessageHandler:self name:@"training"];
+    self.view=[UIView new];self.view.backgroundColor=[UIColor colorWithRed:.48 green:.71 blue:.87 alpha:1];
+    NSString *documents=self.storage.stringByDeletingLastPathComponent;
+    self.backdrop=[[UIImageView alloc] initWithImage:[UIImage imageWithContentsOfFile:[documents stringByAppendingPathComponent:@"training-assets/courtyard.png"]]];
+    self.backdrop.contentMode=UIViewContentModeScaleAspectFill;self.backdrop.clipsToBounds=YES;
+    self.backdrop.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:self.backdrop];self.glassViews=[NSMutableArray new];
+    [config.userContentController addUserScript:[[WKUserScript alloc] initWithSource:@"document.documentElement.classList.add('native-glass')" injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES]];
     self.web=[[WKWebView alloc] initWithFrame:CGRectZero configuration:config];self.web.navigationDelegate=self;
-    self.web.opaque=NO;self.web.backgroundColor=[UIColor colorWithRed:0.063 green:0.098 blue:0.137 alpha:1];
-    self.view=self.web;self.title=@"木桩训练场";
-    self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"返回游戏" style:UIBarButtonItemStyleDone target:self action:@selector(closePanel)];
-    NSURL *file=[NSURL fileURLWithPath:[self.storage.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"battle-training.html"]];
+    self.web.opaque=NO;self.web.backgroundColor=UIColor.clearColor;self.web.scrollView.backgroundColor=UIColor.clearColor;
+    self.web.scrollView.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;
+    self.web.scrollView.bounces=NO;self.web.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:self.web];self.title=@"木桩训练场";
+    // A native close control remains usable even if the web process fails.
+    self.exitButton=[UIButton buttonWithType:UIButtonTypeSystem];self.exitButton.accessibilityLabel=@"返回游戏";
+    [self.exitButton setImage:[UIImage systemImageNamed:@"xmark"] forState:UIControlStateNormal];
+    self.exitButton.tintColor=[UIColor colorWithWhite:1 alpha:.95];self.exitButton.backgroundColor=[UIColor colorWithWhite:1 alpha:.22];
+    self.exitButton.layer.cornerRadius=22;self.exitButton.layer.borderWidth=1;self.exitButton.layer.borderColor=[UIColor colorWithWhite:1 alpha:.6].CGColor;
+    [self.exitButton addTarget:self action:@selector(closePanel) forControlEvents:UIControlEventTouchUpInside];[self.view addSubview:self.exitButton];
+    NSURL *file=[NSURL fileURLWithPath:[documents stringByAppendingPathComponent:@"battle-training.html"]];
     self.diagnostics[@"fileExists"]=@([NSFileManager.defaultManager fileExistsAtPath:file.path]);
     self.diagnostics[@"expectedPath"]=file.path;
-    [self.web loadFileURL:file allowingReadAccessToURL:file];
+    NSError *error=nil;NSString *html=[NSString stringWithContentsOfURL:file encoding:NSUTF8StringEncoding error:&error];
+    if(html.length)[self.web loadHTMLString:html baseURL:[NSURL URLWithString:@"training://local/"]];
+    else {self.diagnostics[@"loadError"]=@(error.code);UILabel *label=[UILabel new];label.text=@"训练场未就绪";label.textAlignment=NSTextAlignmentCenter;label.frame=CGRectMake(20,100,300,60);[self.view addSubview:label];}
+}
+- (void)webView:(WKWebView *)webView startURLSchemeTask:(id<WKURLSchemeTask>)task {
+    NSURL *url=task.request.URL;
+    if(![url.host isEqual:@"local"]||![@[@"/training-assets/courtyard.png",@"/training-assets/portraits.png"] containsObject:url.path]){
+        [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];return;
+    }
+    NSData *data=[NSData dataWithContentsOfFile:[self.storage.stringByDeletingLastPathComponent stringByAppendingPathComponent:[url.path substringFromIndex:1]]];
+    if(!data){[task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];return;}
+    [task didReceiveResponse:[[NSURLResponse alloc] initWithURL:url MIMEType:@"image/png" expectedContentLength:data.length textEncodingName:nil]];
+    [task didReceiveData:data];[task didFinish];self.diagnostics[@"artworkLoaded"]=@YES;
+}
+- (void)webView:(WKWebView *)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task {}
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated];[self.navigationController setNavigationBarHidden:YES animated:NO]; }
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];self.backdrop.frame=self.view.bounds;self.web.frame=self.view.bounds;
+    UIEdgeInsets safe=self.view.safeAreaInsets;self.exitButton.frame=CGRectMake(self.view.bounds.size.width-MAX(16,safe.right)-44,MAX(10,safe.top),44,44);
+    [self.web evaluateJavaScript:@"typeof glassLayout==='function'&&glassLayout()" completionHandler:nil];
+}
+- (void)placeGlass:(NSArray *)rects {
+    if(![rects isKindOfClass:NSArray.class]||rects.count>8)return;
+    for(UIVisualEffectView *glass in self.glassViews)[glass removeFromSuperview];[self.glassViews removeAllObjects];
+    for(id value in rects){
+        if(![value isKindOfClass:NSDictionary.class])continue;
+        NSDictionary *r=value;BOOL valid=YES;for(NSString *key in @[@"x",@"y",@"width",@"height",@"radius"])valid &= [r[key] isKindOfClass:NSNumber.class] && isfinite([r[key] doubleValue]);
+        if(!valid)continue;
+        CGRect frame=CGRectIntersection(self.view.bounds,CGRectMake([r[@"x"] doubleValue],[r[@"y"] doubleValue],[r[@"width"] doubleValue],[r[@"height"] doubleValue]));
+        if(CGRectIsNull(frame)||CGRectIsEmpty(frame))continue;
+        UIVisualEffect *effect;
+        if(@available(iOS 26.0,*)){UIGlassEffect *glass=[UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];glass.tintColor=[UIColor colorWithWhite:.97 alpha:.30];effect=glass;}
+        else effect=[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialLight];
+        UIVisualEffectView *glass=[[UIVisualEffectView alloc] initWithEffect:effect];glass.frame=frame;glass.layer.cornerRadius=MAX(0,MIN(60,[r[@"radius"] doubleValue]));glass.clipsToBounds=YES;glass.userInteractionEnabled=NO;
+        [self.view insertSubview:glass belowSubview:self.web];[self.glassViews addObject:glass];
+    }
+    self.diagnostics[@"glassCount"]=@(self.glassViews.count);
 }
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
@@ -34,12 +88,13 @@
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)action decisionHandler:(void (^)(WKNavigationActionPolicy))decision {
     NSURL *expected=[NSURL fileURLWithPath:[self.storage.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"battle-training.html"]];
     NSURL *actual=action.request.URL;
-    BOOL allowed=actual.isFileURL && [actual.URLByResolvingSymlinksInPath.path isEqual:expected.URLByResolvingSymlinksInPath.path];
+    BOOL allowed=[actual.absoluteString isEqual:@"about:blank"] || [actual.absoluteString isEqual:@"training://local/"] || (actual.isFileURL && [actual.URLByResolvingSymlinksInPath.path isEqual:expected.URLByResolvingSymlinksInPath.path]);
     self.diagnostics[@"navigationAllowed"]=@(allowed);
     self.diagnostics[@"navigationPath"]=actual.isFileURL?(actual.path?:@""):@"non-file";
     decision(allowed?WKNavigationActionPolicyAllow:WKNavigationActionPolicyCancel);
 }
-- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation { self.diagnostics[@"finished"]=@YES; }
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation { self.diagnostics[@"finished"]=@YES;[webView evaluateJavaScript:@"glassLayout()" completionHandler:nil]; }
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView { self.diagnostics[@"webProcessTerminated"]=@YES;[self closePanel]; }
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     self.diagnostics[@"loadError"]=@(error.code);
 }
@@ -56,6 +111,7 @@
     if(!message.frameInfo.isMainFrame || ![message.body isKindOfClass:NSDictionary.class])return;
     NSDictionary *body=message.body;NSNumber *identifier=body[@"id"];NSString *action=body[@"action"];
     if(![identifier isKindOfClass:NSNumber.class] || ![action isKindOfClass:NSString.class])return;
+    if([action isEqual:@"layout"]){if([body[@"args"] isKindOfClass:NSDictionary.class])[self placeGlass:body[@"args"][@"rects"]];return;}
     if([action isEqual:@"close"]){[self respond:identifier result:@{@"retcode":@0}];[self closePanel];return;}
     NSSet *allowed=[NSSet setWithArray:@[@"status",@"dpsStart",@"dpsStop",@"dpsAgain",@"bossSpawn",@"bossClear",@"bossAgain",@"restoreHp",@"fillEnergy",@"arenaEnter",@"arenaExit",@"hudToggle"]];
     if(![allowed containsObject:action])return;

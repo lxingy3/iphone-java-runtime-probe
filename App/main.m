@@ -127,6 +127,12 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
     [@"FIXTURE_MAINTENANCE" writeToFile:[server stringByAppendingPathComponent:@"local-maintenance.token"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
     NSData *trainingHTML=[NSData dataWithContentsOfFile:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"battle-training.html"]];
     [trainingHTML writeToFile:[documents stringByAppendingPathComponent:@"battle-training.html"] atomically:YES];
+    NSString *art=[documents stringByAppendingPathComponent:@"training-assets"];
+    [NSFileManager.defaultManager createDirectoryAtPath:art withIntermediateDirectories:YES attributes:nil error:nil];
+    for(NSString *name in @[@"courtyard.png",@"portraits.png"]){
+        NSData *data=[NSData dataWithContentsOfFile:[[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"training-assets"] stringByAppendingPathComponent:name]];
+        [data writeToFile:[art stringByAppendingPathComponent:name] atomically:YES];
+    }
     id controller=((id(*)(id,SEL))objc_msgSend)(NSClassFromString(@"RPSPlaySupport"),sel_registerName("shared"));
     ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("start:"),storage);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,9*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
@@ -173,6 +179,8 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
                     [web evaluateJavaScript:@"JSON.stringify({ready:document.getElementById('health').textContent,start:document.getElementById('start').disabled,bosses:document.querySelectorAll('.boss').length,overflow:document.documentElement.scrollWidth>window.innerWidth})" completionHandler:^(id value,NSError *error){
                         NSDictionary *render=[value isKindOfClass:NSString.class]?[NSJSONSerialization JSONObjectWithData:[value dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]:nil;
                         checks[@"training_loaded_authenticated_status"]=@(!error && [render[@"ready"] isEqual:@"世界已连接"] && ![render[@"start"] boolValue] && [render[@"bosses"] intValue]==2 && ![render[@"overflow"] boolValue]);
+                        NSDictionary *page=[panel valueForKey:@"diagnostics"];
+                        checks[@"native_glass_and_local_artwork"]=@([page[@"glassCount"] intValue]==3 && [page[@"artworkLoaded"] boolValue] && [panel valueForKey:@"exitButton"]!=nil);
                         NSData *shot=[renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *ctx){[overlay drawViewHierarchyInRect:overlay.bounds afterScreenUpdates:YES];}];
                         [shot writeToFile:[documents stringByAppendingPathComponent:@"training-panel.png"] atomically:YES];
                         [web evaluateJavaScript:@"document.getElementById('start').click()" completionHandler:nil];
