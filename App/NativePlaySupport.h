@@ -125,7 +125,11 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.web=[[WKWebView alloc] initWithFrame:CGRectZero configuration:config];self.web.navigationDelegate=self;
     self.web.opaque=NO;self.web.backgroundColor=UIColor.clearColor;self.web.scrollView.backgroundColor=UIColor.clearColor;
     self.web.scrollView.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;
-    self.web.scrollView.bounces=NO;self.web.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    self.web.scrollView.bounces=NO;self.web.scrollView.bouncesZoom=NO;
+    self.web.scrollView.minimumZoomScale=1;self.web.scrollView.maximumZoomScale=1;
+    self.web.scrollView.pinchGestureRecognizer.enabled=NO;
+    self.web.allowsBackForwardNavigationGestures=NO;
+    self.web.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.web];self.title=@"木桩训练场";
     // A native close control remains usable even if the web process fails.
     self.exitButton=[UIButton buttonWithType:UIButtonTypeSystem];self.exitButton.accessibilityLabel=@"返回游戏";
@@ -182,9 +186,11 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     decision(allowed?WKNavigationActionPolicyAllow:WKNavigationActionPolicyCancel);
 }
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    webView.scrollView.pinchGestureRecognizer.enabled=NO;
+    [webView.scrollView setZoomScale:1 animated:NO];
     self.diagnostics[@"finished"]=@YES;[self alignPageBackground];[webView evaluateJavaScript:@"glassLayout()" completionHandler:nil];
     if([self.initialSection isEqual:@"results"])[webView evaluateJavaScript:@"openModal('resultsModal')" completionHandler:nil];
-    else if([@[@"target",@"party",@"display",@"supplies",@"timing"] containsObject:self.initialSection]){
+    else if([@[@"target",@"elements",@"party",@"display",@"supplies",@"timing"] containsObject:self.initialSection]){
         NSString *code=[NSString stringWithFormat:@"openTrainingSection('%@')",self.initialSection];[webView evaluateJavaScript:code completionHandler:nil];
     }
 }
@@ -276,6 +282,9 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 @property(nonatomic,strong) UIButton *trainingInteraction;
 @property(nonatomic,strong) UIButton *trainingReport;
 @property(nonatomic) BOOL trainingRequest;
+@property(nonatomic) BOOL interactionFetching;
+@property(nonatomic,strong) NSDictionary *interactionSnapshot;
+@property(nonatomic,strong) NSDate *interactionResponseAt;
 @property(nonatomic,strong) NSDictionary *service;
 @property(nonatomic,strong) NSDate *began;
 @property(nonatomic,strong) NSDate *readyAt;
@@ -322,6 +331,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     if(self.storage) return;
     self.storage=storage; self.began=NSDate.date;
     [NSTimer scheduledTimerWithTimeInterval:.5 repeats:YES block:^(NSTimer *timer){ [self update]; }];
+    [NSTimer scheduledTimerWithTimeInterval:.1 repeats:YES block:^(NSTimer *timer){ [self pollTrainingInteraction]; }];
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil
         queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification){
             if(!self.readyAt || self.saving) return;
@@ -424,10 +434,8 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 }
 - (void)updateTrainingHUD:(NSDictionary *)dps {
     NSDictionary *config=dps[@"config"];BOOL exists=[dps[@"mode"] isEqual:@"lab"];
-    NSDictionary *station=[dps[@"station"] isKindOfClass:NSDictionary.class]?dps[@"station"]:nil;BOOL nearby=[station[@"label"] length]>0;
-    self.trainingInteraction.hidden=!nearby&&(!exists||(![dps[@"canStart"] boolValue]&&![dps[@"active"] boolValue]&&![dps[@"phase"] isEqual:@"finished"]));
-    self.trainingInteraction.enabled=!self.trainingRequest;
-    NSString *action=nearby?station[@"label"]:([dps[@"phase"] isEqual:@"finished"]?@"再次布置":([dps[@"active"] boolValue]?@"停止计时":@"开始挑战"));[self.trainingInteraction setTitle:action forState:UIControlStateNormal];
+    NSDictionary *interaction=(dps&&self.interactionResponseAt&&-self.interactionResponseAt.timeIntervalSinceNow<.4)?self.interactionSnapshot:dps;
+    [self updateTrainingInteraction:interaction];
     self.trainingReport.hidden=!exists;
     self.trainingChart.hidden=!exists||![config[@"chart"] boolValue];self.trainingChart.points=dps[@"curve"]?:@[];[self.trainingChart setNeedsDisplay];
     self.trainingDetails.hidden=!exists||![config[@"resistanceHud"] boolValue];
@@ -439,10 +447,39 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     if(a)self.trainingPanel.text=[NSString stringWithFormat:@"  %@\n  生命 %.0f　攻击 %.0f\n  防御 %.0f　精通 %.0f\n  暴击 %.1f%%　暴伤 %.1f%%\n  充能 %.1f%%　增伤 %.1f%%",a[@"name"]?:@"",[a[@"hp"] doubleValue],[a[@"attack"] doubleValue],[a[@"defense"] doubleValue],[a[@"mastery"] doubleValue],[a[@"crit"] doubleValue],[a[@"critDamage"] doubleValue],[a[@"recharge"] doubleValue],[a[@"elementBonus"] doubleValue]];
     [self.view setNeedsLayout];
 }
+- (void)updateTrainingInteraction:(NSDictionary *)dps {
+    BOOL exists=[dps[@"mode"] isEqual:@"lab"];
+    NSDictionary *station=[dps[@"station"] isKindOfClass:NSDictionary.class]?dps[@"station"]:nil;
+    BOOL nearby=[station[@"label"] length]>0;
+    self.trainingInteraction.hidden=!nearby&&(!exists||(![dps[@"canStart"] boolValue]&&![dps[@"active"] boolValue]&&![dps[@"phase"] isEqual:@"finished"]));
+    self.trainingInteraction.enabled=!self.trainingRequest;
+    NSString *action=nearby?station[@"label"]:([dps[@"phase"] isEqual:@"finished"]?@"再次布置":([dps[@"active"] boolValue]?@"停止计时":@"开始挑战"));
+    if(![self.trainingInteraction.currentTitle isEqual:action])[self.trainingInteraction setTitle:action forState:UIControlStateNormal];
+}
+- (void)pollTrainingInteraction {
+    if(self.interactionFetching||self.trainingRequest||self.presentedViewController||UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;
+    if(![self.service[@"dps"][@"inArena"] boolValue]||!self.lastResponse||-self.lastResponse.timeIntervalSinceNow>3)return;
+    NSString *token=[NSString stringWithContentsOfFile:[self.storage stringByAppendingPathComponent:@"server/local-maintenance.token"] encoding:NSUTF8StringEncoding error:nil];
+    if(!token.length)return;
+    self.interactionFetching=YES;
+    NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://127.0.0.1:8088/local/manage/training-interaction"]];
+    request.timeoutInterval=.4;[request setValue:token forHTTPHeaderField:@"X-Local-Maintenance"];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error){
+        id object=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
+        NSDictionary *value=(!error&&[(NSHTTPURLResponse *)response statusCode]==200&&[object isKindOfClass:NSDictionary.class]&&[object[@"retcode"] isEqual:@0]&&[object[@"interaction"] isKindOfClass:NSDictionary.class])?object[@"interaction"]:nil;
+        dispatch_async(dispatch_get_main_queue(),^{
+            self.interactionFetching=NO;
+            if(!value||self.trainingRequest)return;
+            self.interactionSnapshot=value;self.interactionResponseAt=NSDate.date;
+            // Apply on receipt, independent of the half-second damage/save refresh.
+            [self updateTrainingInteraction:value];
+        });
+    }] resume];
+}
 - (void)trainingInteract {
-    if(self.trainingRequest)return;NSDictionary *dps=self.service[@"dps"];
+    if(self.trainingRequest)return;NSDictionary *dps=(self.interactionResponseAt&&-self.interactionResponseAt.timeIntervalSinceNow<.4)?self.interactionSnapshot:self.service[@"dps"];
     NSString *section=dps[@"station"][@"section"];
-    if([@[@"target",@"party",@"display",@"supplies",@"timing"] containsObject:section]){
+    if([@[@"target",@"elements",@"party",@"display",@"supplies",@"timing"] containsObject:section]){
         [self showTraining];UINavigationController *nav=(UINavigationController *)self.presentedViewController;
         if([nav.topViewController isKindOfClass:RPSBattlePanel.class]){RPSBattlePanel *panel=(RPSBattlePanel *)nav.topViewController;panel.initialSection=section;[panel.web evaluateJavaScript:[NSString stringWithFormat:@"typeof openTrainingSection==='function'&&openTrainingSection('%@')",section] completionHandler:nil];}
         return;
@@ -452,7 +489,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.trainingRequest=YES;self.trainingInteraction.enabled=NO;
     NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://127.0.0.1:8088/local/manage/training-action"]];request.HTTPMethod=@"POST";request.timeoutInterval=6;[request setValue:token forHTTPHeaderField:@"X-Local-Maintenance"];[request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];request.HTTPBody=[NSJSONSerialization dataWithJSONObject:@{@"action":action,@"args":@{}} options:0 error:nil];
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error){NSDictionary *result=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;dispatch_async(dispatch_get_main_queue(), ^{
-        self.trainingRequest=NO;self.trainingInteraction.enabled=YES;if(!error&&[result[@"retcode"] isEqual:@0]){NSMutableDictionary *service=[self.service mutableCopy];service[@"dps"]=result[@"dps"]?:@{};self.service=service;[self update];}else{self.message.hidden=NO;self.message.text=result[@"message"]?:@"操作未完成，请稍后再试。";}
+        self.trainingRequest=NO;self.trainingInteraction.enabled=YES;self.interactionResponseAt=nil;if(!error&&[result[@"retcode"] isEqual:@0]){NSMutableDictionary *service=[self.service mutableCopy];service[@"dps"]=result[@"dps"]?:@{};self.service=service;[self update];}else{self.message.hidden=NO;self.message.text=result[@"message"]?:@"操作未完成，请稍后再试。";}
     });}] resume];
 }
 - (void)showTrainingReport {

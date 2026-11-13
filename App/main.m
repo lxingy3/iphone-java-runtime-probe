@@ -14,6 +14,7 @@ static int RPDirectoriesMatch(const char *left, const char *right) {
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <WebKit/WebKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
 #include <unistd.h>
 #include <dlfcn.h>
@@ -162,6 +163,11 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         checks[@"lab_stale_statistics_visible"]=@([dpsLabel.text containsString:@"正在同步"]);[controller setValue:NSDate.date forKey:@"lastResponse"];
         [controller setValue:@{@"ready":@YES,@"dps":@{@"inArena":@YES,@"station":@{@"label":@"角色属性",@"section":@"party"}}} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         checks[@"room_station_proximity_action"]=@(!interaction.hidden&&[interaction.currentTitle isEqual:@"角色属性"]);
+        CFTimeInterval interactionAt=CACurrentMediaTime();
+        ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("updateTrainingInteraction:"),@{@"inArena":@YES,@"station":@{@"label":@"元素设置",@"section":@"elements"}});
+        checks[@"station_switch_applies_on_receipt_without_timer"]=@([interaction.currentTitle isEqual:@"元素设置"]&&CACurrentMediaTime()-interactionAt<.016);
+        ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("updateTrainingInteraction:"),@{@"inArena":@NO});
+        checks[@"leaving_station_hides_interaction_immediately"]=@(interaction.hidden);
         [controller setValue:@{@"ready":@YES,@"dps":lab} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         UIView *root=[controller view];CGRect original=root.frame;
         NSMutableArray *layouts=[NSMutableArray new];BOOL within=YES,edgeAnchored=YES;
@@ -206,6 +212,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
                     UINavigationController *nav=(UINavigationController *)[controller presentedViewController];
                     checks[@"menu_dismisses"]=@([nav isKindOfClass:UINavigationController.class]);
                     UIViewController *panel=nav.topViewController;WKWebView *web=[panel valueForKey:@"web"];
+                    checks[@"training_pinch_and_browser_navigation_disabled"]=@(!web.scrollView.pinchGestureRecognizer.enabled&&!web.scrollView.bouncesZoom&&!web.allowsBackForwardNavigationGestures&&web.scrollView.zoomScale==1);
                     checks[@"training_takes_keyboard_focus"]=@(overlay.isKeyWindow);
                     [web evaluateJavaScript:@"JSON.stringify({ready:document.getElementById('health').textContent,start:document.getElementById('start').disabled,bosses:document.querySelectorAll('.boss').length,overflow:document.documentElement.scrollWidth>window.innerWidth,singleSurface:document.documentElement.classList.contains('native-host')&&!document.documentElement.classList.contains('native-glass'),viewport:{width:innerWidth,height:innerHeight,visualWidth:visualViewport.width,scale:visualViewport.scale},panels:Array.from(document.querySelectorAll('[data-glass]')).filter(e=>e.getClientRects().length).map(e=>({id:e.dataset.glass,x:e.getBoundingClientRect().x,y:e.getBoundingClientRect().y,width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height}))})" completionHandler:^(id value,NSError *error){
                         NSDictionary *render=[value isKindOfClass:NSString.class]?[NSJSONSerialization JSONObjectWithData:[value dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]:nil;
