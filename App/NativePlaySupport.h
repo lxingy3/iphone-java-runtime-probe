@@ -241,7 +241,8 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 @implementation RPSOverlayWindow
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit = [super hitTest:point withEvent:event];
-    return hit == self.rootViewController.view ? nil : hit;
+    BOOL background=!self.rootViewController.presentedViewController&&(hit==self.rootViewController.view||[hit isKindOfClass:RPSAdaptiveView.class]);
+    return background?nil:hit;
 }
 @end
 
@@ -266,6 +267,11 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 
 @interface RPSPlaySupport : UIViewController
 @property(nonatomic,strong) RPSOverlayWindow *overlay;
+@property(nonatomic,strong) RPSAdaptiveView *hud;
+@property(nonatomic,weak) UIWindow *gameWindow;
+@property(nonatomic,weak) UIView *gameSurface;
+@property(nonatomic,strong) CADisplayLink *geometryLink;
+@property(nonatomic,copy) NSString *geometrySignature;
 @property(nonatomic,strong) UIButton *button;
 @property(nonatomic,strong) UILabel *message;
 @property(nonatomic,strong) UILabel *trainingDetails;
@@ -300,10 +306,11 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 + (instancetype)shared { static id value; static dispatch_once_t once; dispatch_once(&once, ^{ value=[self new]; }); return value; }
 - (void)loadView {
     self.view=[RPSAdaptiveView new]; self.view.backgroundColor=UIColor.clearColor;
+    self.hud=[RPSAdaptiveView new];self.hud.backgroundColor=UIColor.clearColor;[self.view addSubview:self.hud];
     self.button=[[RPSMinimapButton alloc] initWithFrame:CGRectZero];
     self.button.accessibilityIdentifier=@"local-play-status";
     [self.button addTarget:self action:@selector(showStatus) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.button];
+    [self.hud addSubview:self.button];
     self.message=[UILabel new];
     self.message.numberOfLines=0; self.message.textAlignment=NSTextAlignmentCenter;
     self.message.font=RPSTrainingFont(13);
@@ -311,19 +318,53 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.message.textColor=UIColor.whiteColor; self.message.backgroundColor=[UIColor colorWithWhite:0.08 alpha:0.85];
     self.message.layer.cornerRadius=10; self.message.clipsToBounds=YES;
     self.message.hidden=YES;self.message.alpha=0;self.message.userInteractionEnabled=NO;
-    [self.view addSubview:self.message];
+    [self.hud addSubview:self.message];
     self.trainingDetails=[UILabel new];self.trainingPanel=[UILabel new];
-    for(UILabel *label in @[self.trainingDetails,self.trainingPanel]){label.font=RPSTrainingFont(11);label.numberOfLines=0;label.textColor=UIColor.whiteColor;label.backgroundColor=[UIColor colorWithWhite:0 alpha:.28];label.layer.cornerRadius=8;label.clipsToBounds=YES;label.hidden=YES;[self.view addSubview:label];}
-    self.trainingChart=[RPSTrainingChart new];self.trainingChart.userInteractionEnabled=NO;self.trainingChart.hidden=YES;self.trainingChart.layer.cornerRadius=8;self.trainingChart.clipsToBounds=YES;[self.view addSubview:self.trainingChart];
+    for(UILabel *label in @[self.trainingDetails,self.trainingPanel]){label.font=RPSTrainingFont(11);label.numberOfLines=0;label.textColor=UIColor.whiteColor;label.backgroundColor=[UIColor colorWithWhite:0 alpha:.28];label.layer.cornerRadius=8;label.clipsToBounds=YES;label.hidden=YES;[self.hud addSubview:label];}
+    self.trainingChart=[RPSTrainingChart new];self.trainingChart.userInteractionEnabled=NO;self.trainingChart.hidden=YES;self.trainingChart.layer.cornerRadius=8;self.trainingChart.clipsToBounds=YES;[self.hud addSubview:self.trainingChart];
     self.trainingInteraction=[UIButton buttonWithType:UIButtonTypeSystem];self.trainingReport=[UIButton buttonWithType:UIButtonTypeSystem];
-    for(UIButton *b in @[self.trainingInteraction,self.trainingReport]){b.backgroundColor=[UIColor colorWithWhite:.08 alpha:.7];b.tintColor=UIColor.whiteColor;b.titleLabel.font=RPSTrainingFont(14);b.layer.cornerRadius=21;b.layer.borderWidth=1;b.layer.borderColor=[UIColor colorWithWhite:1 alpha:.5].CGColor;b.hidden=YES;[self.view addSubview:b];}
+    for(UIButton *b in @[self.trainingInteraction,self.trainingReport]){b.backgroundColor=[UIColor colorWithWhite:.08 alpha:.7];b.tintColor=UIColor.whiteColor;b.titleLabel.font=RPSTrainingFont(14);b.layer.cornerRadius=21;b.layer.borderWidth=1;b.layer.borderColor=[UIColor colorWithWhite:1 alpha:.5].CGColor;b.hidden=YES;[self.hud addSubview:b];}
     self.trainingInteraction.accessibilityIdentifier=@"training-interaction";self.trainingReport.accessibilityIdentifier=@"training-report";
     [self.trainingInteraction addTarget:self action:@selector(trainingInteract) forControlEvents:UIControlEventTouchUpInside];
-    [self.trainingReport setTitle:@"战斗报告" forState:UIControlStateNormal];[self.trainingReport addTarget:self action:@selector(showTrainingReport) forControlEvents:UIControlEventTouchUpInside];
+    [self.trainingReport setImage:[UIImage systemImageNamed:@"chart.bar.xaxis" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:23]] forState:UIControlStateNormal];self.trainingReport.accessibilityLabel=@"战斗报告";
+    self.trainingReport.backgroundColor=UIColor.clearColor;self.trainingReport.layer.borderWidth=0;
+    [self.trainingReport addTarget:self action:@selector(showTrainingReport) forControlEvents:UIControlEventTouchUpInside];
+}
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {return self.gameWindow.rootViewController?self.gameWindow.rootViewController.supportedInterfaceOrientations:UIInterfaceOrientationMaskAll;}
+- (BOOL)shouldAutorotate {return YES;}
+- (BOOL)prefersStatusBarHidden {return self.gameWindow.rootViewController.prefersStatusBarHidden;}
+- (UIView *)renderSurfaceIn:(UIView *)view {
+    if([NSStringFromClass(view.class) isEqualToString:@"UnityView"])return view;
+    for(UIView *child in view.subviews){UIView *found=[self renderSurfaceIn:child];if(found)return found;}
+    return nil;
+}
+// Follow the game's actual coordinate system. Device orientation and screen
+// aspect ratio cannot describe a transformed Unity view on a folding display.
+- (void)alignHUDToView:(UIView *)source {
+    if(!source.window||!self.view.window||source.bounds.size.width<=0||source.bounds.size.height<=0)return;
+    CGPoint o=source.bounds.origin;
+    CGPoint p=[source convertPoint:o toView:self.view],x=[source convertPoint:CGPointMake(o.x+1,o.y) toView:self.view],y=[source convertPoint:CGPointMake(o.x,o.y+1) toView:self.view];
+    CGAffineTransform transform=CGAffineTransformMake(x.x-p.x,x.y-p.y,y.x-p.x,y.y-p.y,0,0);
+    CGPoint center=[source convertPoint:CGPointMake(CGRectGetMidX(source.bounds),CGRectGetMidY(source.bounds)) toView:self.view];
+    CGRect bounds=(CGRect){CGPointZero,source.bounds.size};
+    BOOL changed=!CGRectEqualToRect(self.hud.bounds,bounds)||!CGPointEqualToPoint(self.hud.center,center)||!CGAffineTransformEqualToTransform(self.hud.transform,transform);
+    if(changed){self.hud.bounds=bounds;self.hud.center=center;self.hud.transform=transform;[self layoutHUD];}
+}
+- (void)syncGameGeometry {
+    if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive||!self.gameSurface)return;
+    [self alignHUDToView:self.gameSurface];
+    NSString *signature=[NSString stringWithFormat:@"%@|%@|%@|%@|%@",NSStringFromCGRect(self.overlay.windowScene.coordinateSpace.bounds),NSStringFromCGRect(self.gameWindow.bounds),NSStringFromCGRect(self.gameSurface.bounds),NSStringFromCGAffineTransform(self.hud.transform),NSStringFromCGPoint(self.hud.center)];
+    if(![signature isEqual:self.geometrySignature]&&self.storage){
+        self.geometrySignature=signature;
+        NSDictionary *state=@{@"at":@([NSDate.date timeIntervalSince1970]),@"sceneBounds":NSStringFromCGRect(self.overlay.windowScene.coordinateSpace.bounds),@"gameWindowBounds":NSStringFromCGRect(self.gameWindow.bounds),@"gameSurfaceBounds":NSStringFromCGRect(self.gameSurface.bounds),@"surfaceClass":NSStringFromClass(self.gameSurface.class),@"hudBounds":NSStringFromCGRect(self.hud.bounds),@"hudTransform":NSStringFromCGAffineTransform(self.hud.transform),@"hudCenter":NSStringFromCGPoint(self.hud.center),@"sdkCompatibilityCandidate":@YES};
+        [[NSJSONSerialization dataWithJSONObject:state options:NSJSONWritingPrettyPrinted error:nil] writeToFile:[self.storage stringByAppendingPathComponent:@"viewport-state.json"] atomically:YES];
+    }
 }
 - (void)start:(NSString *)storage {
     if(self.storage) return;
     self.storage=storage; self.began=NSDate.date;
+    self.geometryLink=[CADisplayLink displayLinkWithTarget:self selector:@selector(syncGameGeometry)];
+    self.geometryLink.preferredFrameRateRange=CAFrameRateRangeMake(10,30,30);[self.geometryLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     [NSTimer scheduledTimerWithTimeInterval:.5 repeats:YES block:^(NSTimer *timer){ [self update]; }];
     [NSTimer scheduledTimerWithTimeInterval:.1 repeats:YES block:^(NSTimer *timer){ [self pollTrainingInteraction]; }];
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil
@@ -343,9 +384,17 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) return;
     for(UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if(![scene isKindOfClass:UIWindowScene.class] || scene.activationState!=UISceneActivationStateForegroundActive) continue;
+        UIWindow *game=nil;
+        for(UIWindow *candidate in ((UIWindowScene *)scene).windows){
+            if(candidate==self.overlay||candidate.hidden||candidate.windowLevel!=UIWindowLevelNormal||!candidate.rootViewController)continue;
+            if([self renderSurfaceIn:candidate.rootViewController.view]){game=candidate;break;}
+            if(!game||candidate.isKeyWindow)game=candidate;
+        }
+        self.gameWindow=game;self.gameSurface=[self renderSurfaceIn:game.rootViewController.view]?:game.rootViewController.view;
         if(self.overlay.windowScene==(UIWindowScene *)scene) {
             CGRect bounds=((UIWindowScene *)scene).coordinateSpace.bounds;
             if(!CGRectEqualToRect(self.overlay.frame,bounds)){self.overlay.frame=bounds;[self.view setNeedsLayout];}
+            [self syncGameGeometry];
             return;
         }
         self.overlay.hidden=YES;
@@ -414,7 +463,16 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     [UIView animateWithDuration:.35 delay:0 options:UIViewAnimationOptionBeginFromCurrentState|UIViewAnimationOptionAllowUserInteraction animations:^{self.message.alpha=0;} completion:^(BOOL finished){if(!self.messageVisible)self.message.hidden=YES;}];
 }
 - (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];NSArray<NSValue *> *regions=[(RPSAdaptiveView *)self.view contentRegions];CGRect area=regions.firstObject.CGRectValue,controls=regions.lastObject.CGRectValue;
+    [super viewDidLayoutSubviews];
+    if(self.gameSurface)[self alignHUDToView:self.gameSurface];else self.hud.frame=self.view.bounds;
+    [self layoutHUD];
+}
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context){[self syncGameGeometry];} completion:^(id<UIViewControllerTransitionCoordinatorContext> context){[self syncGameGeometry];[self.view setNeedsLayout];}];
+}
+- (void)layoutHUD {
+    NSArray<NSValue *> *regions=[self.hud contentRegions];CGRect area=regions.firstObject.CGRectValue,controls=regions.lastObject.CGRectValue;
     self.button.frame=CGRectMake(area.origin.x+MIN(138,MAX(0,area.size.width*.18)),area.origin.y+8,MIN(44,area.size.width),44);
     CGFloat messageLimit=MIN(390,MAX(44,area.size.width-24));CGSize messageSize=[self.message sizeThatFits:CGSizeMake(messageLimit-24,CGFLOAT_MAX)];
     CGFloat messageWidth=MIN(messageLimit,MAX(120,messageSize.width+24));
@@ -425,7 +483,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.trainingChart.frame=CGRectMake(left,next,width,height);if(!self.trainingChart.hidden)next+=height+5;
     self.trainingPanel.frame=CGRectMake(left,next,width,height);self.trainingPanel.font=RPSTrainingFont(height<80?10:11);self.trainingDetails.font=RPSTrainingFont(height<80?10:11);
     self.trainingInteraction.frame=CGRectMake(controls.origin.x+controls.size.width*.55,controls.origin.y+controls.size.height*.46,MIN(160,controls.size.width*.40),44);
-    self.trainingReport.frame=CGRectMake(CGRectGetMidX(controls)-60,CGRectGetMaxY(controls)-56,120,44);
+    self.trainingReport.frame=CGRectMake(area.origin.x+64,CGRectGetMaxY(area)-52,44,44);
 }
 - (void)updateTrainingHUD:(NSDictionary *)dps {
     NSDictionary *config=dps[@"config"];BOOL exists=[dps[@"mode"] isEqual:@"lab"];

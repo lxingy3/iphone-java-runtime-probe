@@ -196,16 +196,30 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("updateTrainingInteraction:"),@{@"inArena":@NO});
         checks[@"leaving_station_hides_interaction_immediately"]=@(interaction.hidden);
         [controller setValue:@{@"ready":@YES,@"dps":lab} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
-        UIView *root=[controller view];CGRect original=root.frame;
+        UIView *root=[controller valueForKey:@"hud"];
+        UIView *source=[UIView new];[gameWindow.rootViewController.view addSubview:source];
         NSMutableArray *layouts=[NSMutableArray new];BOOL within=YES,minimapAnchored=YES;
         CGSize sizes[]={{375,812},{812,375},{768,1024},{1024,768}};
         for(int i=0;i<4;i++){
-            root.frame=(CGRect){CGPointZero,sizes[i]};[root setNeedsLayout];[root layoutIfNeeded];
+            source.bounds=(CGRect){CGPointZero,sizes[i]};source.center=CGPointMake(CGRectGetMidX(gameWindow.bounds),CGRectGetMidY(gameWindow.bounds));
+            ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("alignHUDToView:"),source);
             BOOL fit=CGRectContainsRect(root.bounds,button.frame)&&CGRectContainsRect(root.bounds,interaction.frame)&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingChart"] frame])&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingPanel"] frame]);within &= fit;
             minimapAnchored &= button.frame.size.width==44&&button.frame.size.height==44&&CGRectGetMinX(button.frame)>root.safeAreaInsets.left+30&&CGRectGetMinY(button.frame)<=root.safeAreaInsets.top+12;
             [layouts addObject:@{@"width":@(sizes[i].width),@"height":@(sizes[i].height),@"buttonFits":@(fit)}];
         }
-        root.frame=original;[root setNeedsLayout];[root layoutIfNeeded];
+        BOOL cornersMatch=YES,reportClear=YES;
+        CGFloat turns[]={0,M_PI_2,M_PI,-M_PI_2};
+        for(int i=0;i<4;i++){
+            source.bounds=CGRectMake(0,0,812,375);source.transform=CGAffineTransformMakeRotation(turns[i]);
+            ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("alignHUDToView:"),source);
+            CGPoint corners[]={{0,0},{812,0},{0,375},{812,375}};
+            for(int c=0;c<4;c++){CGPoint a=[source convertPoint:corners[c] toView:overlay],b=[root convertPoint:corners[c] toView:overlay];cornersMatch&=hypot(a.x-b.x,a.y-b.y)<.5;}
+            UIButton *reportButton=[controller valueForKey:@"trainingReport"];
+            reportClear&=CGRectGetMaxX(reportButton.frame)<root.bounds.size.width*.3&&reportButton.frame.size.width==44;
+        }
+        checks[@"hud_follows_all_four_game_rotations"]=@(cornersMatch);
+        checks[@"report_icon_avoids_health_bar_and_attack_controls"]=@(reportClear);
+        [source removeFromSuperview];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("syncGameGeometry"));
         checks[@"compact_and_expanded_layouts"]=@(within);
         checks[@"launcher_beside_minimap_in_all_sizes"]=@(minimapAnchored);
         Class adaptive=NSClassFromString(@"RPSAdaptiveView");SEL regionSelector=sel_registerName("regionsForBounds:divisions:occlusions:");
