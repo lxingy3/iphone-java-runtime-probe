@@ -58,8 +58,6 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 @property(nonatomic,weak) UIWindow *previousKey;
 @property(nonatomic,strong) NSMutableDictionary *diagnostics;
 @property(nonatomic,strong) UIImageView *backdrop;
-@property(nonatomic,strong) NSMutableArray<UIVisualEffectView *> *glassViews;
-@property(nonatomic,copy) NSArray *lastGlassLayout;
 @property(nonatomic,strong) UIButton *exitButton;
 @property(nonatomic,copy) NSString *initialSection;
 @end
@@ -75,8 +73,8 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.backdrop=[[UIImageView alloc] initWithImage:[UIImage imageWithContentsOfFile:[documents stringByAppendingPathComponent:@"training-assets/courtyard.png"]]];
     self.backdrop.contentMode=UIViewContentModeScaleAspectFill;self.backdrop.clipsToBounds=YES;
     self.backdrop.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:self.backdrop];self.glassViews=[NSMutableArray new];
-    [config.userContentController addUserScript:[[WKUserScript alloc] initWithSource:@"document.documentElement.classList.add('native-glass')" injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES]];
+    [self.view addSubview:self.backdrop];
+    [config.userContentController addUserScript:[[WKUserScript alloc] initWithSource:@"document.documentElement.classList.add('native-host')" injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES]];
     self.web=[[WKWebView alloc] initWithFrame:CGRectZero configuration:config];self.web.navigationDelegate=self;
     self.web.opaque=NO;self.web.backgroundColor=UIColor.clearColor;self.web.scrollView.backgroundColor=UIColor.clearColor;
     self.web.scrollView.contentInsetAdjustmentBehavior=UIScrollViewContentInsetAdjustmentNever;
@@ -100,24 +98,6 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     [super viewDidLayoutSubviews];self.backdrop.frame=self.view.bounds;self.web.frame=self.view.bounds;
     UIEdgeInsets safe=self.view.safeAreaInsets;self.exitButton.frame=CGRectMake(self.view.bounds.size.width-MAX(16,safe.right)-44,MAX(10,safe.top),44,44);
     [self.web evaluateJavaScript:@"typeof glassLayout==='function'&&glassLayout()" completionHandler:nil];
-}
-- (void)placeGlass:(NSArray *)rects {
-    if(![rects isKindOfClass:NSArray.class]||rects.count>8)return;
-    if([self.lastGlassLayout isEqualToArray:rects])return;self.lastGlassLayout=[rects copy];
-    for(UIVisualEffectView *glass in self.glassViews)[glass removeFromSuperview];[self.glassViews removeAllObjects];
-    for(id value in rects){
-        if(![value isKindOfClass:NSDictionary.class])continue;
-        NSDictionary *r=value;BOOL valid=YES;for(NSString *key in @[@"x",@"y",@"width",@"height",@"radius"])valid &= [r[key] isKindOfClass:NSNumber.class] && isfinite([r[key] doubleValue]);
-        if(!valid)continue;
-        CGRect frame=CGRectIntersection(self.view.bounds,CGRectMake([r[@"x"] doubleValue],[r[@"y"] doubleValue],[r[@"width"] doubleValue],[r[@"height"] doubleValue]));
-        if(CGRectIsNull(frame)||CGRectIsEmpty(frame))continue;
-        UIVisualEffect *effect;
-        if(@available(iOS 26.0,*)){UIGlassEffect *glass=[UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];glass.tintColor=[UIColor colorWithWhite:.97 alpha:.30];effect=glass;}
-        else effect=[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialLight];
-        UIVisualEffectView *glass=[[UIVisualEffectView alloc] initWithEffect:effect];glass.frame=frame;glass.layer.cornerRadius=MAX(0,MIN(60,[r[@"radius"] doubleValue]));glass.clipsToBounds=YES;glass.userInteractionEnabled=NO;
-        [self.view insertSubview:glass belowSubview:self.web];[self.glassViews addObject:glass];
-    }
-    self.diagnostics[@"glassCount"]=@(self.glassViews.count);
 }
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
@@ -161,7 +141,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     if(!message.frameInfo.isMainFrame || ![message.body isKindOfClass:NSDictionary.class])return;
     NSDictionary *body=message.body;NSNumber *identifier=body[@"id"];NSString *action=body[@"action"];
     if(![identifier isKindOfClass:NSNumber.class] || ![action isKindOfClass:NSString.class])return;
-    if([action isEqual:@"layout"]){if([body[@"args"] isKindOfClass:NSDictionary.class])[self placeGlass:body[@"args"][@"rects"]];return;}
+    if([action isEqual:@"layout"]){return;}
     if([action isEqual:@"close"]){[self respond:identifier result:@{@"retcode":@0}];[self closePanel];return;}
     NSSet *allowed=[NSSet setWithArray:@[@"status",@"dpsStart",@"dpsStop",@"dpsAgain",@"bossSpawn",@"bossClear",@"bossAgain",@"restoreHp",@"fillEnergy",@"arenaEnter",@"arenaExit",@"hudToggle",@"labPrepare",@"labDisplay",@"labStart",@"labStop",@"labAgain",@"labAvatar",@"labResetAvatars",@"partyHeal",@"partyRevive",@"partyEnergy"]];
     if(![allowed containsObject:action])return;
