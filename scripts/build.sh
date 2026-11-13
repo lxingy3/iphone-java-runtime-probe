@@ -788,6 +788,8 @@ if [[ "$sdk_name" == iphonesimulator ]]; then
 fixture="$project_root/build/ObserverFixture.app"
 mkdir -p "$fixture/Frameworks"
 cp App/battle-training.html "$fixture/battle-training.html"
+mkdir -p "$fixture/training-assets"
+cp App/training-assets/*.png "$fixture/training-assets/"
 cp "$kit/RuntimeHost.dylib" "$kit/RuntimeClientProbe.dylib" "$fixture/Frameworks/"
 xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
   -fobjc-arc -fmodules -O2 -DRP_CLIENT_FIXTURE=1 App/main.m \
@@ -888,10 +890,11 @@ def runtime_version(device):
     return tuple(map(int,match.group(1).split('-')))
 candidates.sort(key=runtime_version,reverse=True)
 if profile=='standard':
-    # Match the selected Xcode. iOS 27.2 stalled before any fixture executed
-    # on both pre-provisioned and fresh devices.
-    compatible=[d for d in candidates if runtime_version(d)==(27,1)]
-    if not compatible: raise SystemExit('Missing Xcode-matched iOS 27.1 simulator')
+    # Use the newest ordinary-phone runtime supported by this Xcode.
+    # The runner's 27.1 image is Duo-only; its ordinary phones have 27.0/27.2.
+    # The newer 27.2 installer stalled before any fixture executed.
+    compatible=[d for d in candidates if runtime_version(d)<=(27,1)]
+    if not compatible: raise SystemExit('Missing Xcode-compatible standard simulator')
     candidates=compatible
 device=candidates[0]
 # Pre-provisioned CI devices can report Booted while installd never responds.
