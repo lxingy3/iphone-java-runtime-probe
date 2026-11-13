@@ -1,5 +1,35 @@
 // Small host controls for a self-contained local runtime. No account credentials or external services.
 #import <WebKit/WebKit.h>
+#import <CoreText/CoreText.h>
+
+static UIFont *RPSTrainingFont(CGFloat size) {
+    static NSString *name;static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSURL *url=[NSURL fileURLWithPath:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"miHoYoSDKAssets.bundle/font/zh-cn.ttf"]];
+        if([NSFileManager.defaultManager fileExistsAtPath:url.path]){
+            CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url,kCTFontManagerScopeProcess,NULL);
+            NSArray *descriptors=CFBridgingRelease(CTFontManagerCreateFontDescriptorsFromURL((__bridge CFURLRef)url));
+            if(descriptors.count)name=CFBridgingRelease(CTFontDescriptorCopyAttribute((__bridge CTFontDescriptorRef)descriptors.firstObject,kCTFontNameAttribute));
+        }
+    });
+    return name?[UIFont fontWithName:name size:size]:[UIFont systemFontOfSize:size weight:UIFontWeightSemibold];
+}
+
+@interface RPSTrainingChart : UIView
+@property(nonatomic,copy) NSArray *points;
+@end
+@implementation RPSTrainingChart
+- (void)drawRect:(CGRect)rect {
+    [[UIColor colorWithWhite:0 alpha:.35] setFill];UIRectFill(rect);
+    double max=1,end=1;for(NSDictionary *p in self.points){max=MAX(max,[p[@"dps"] doubleValue]);end=MAX(end,[p[@"seconds"] doubleValue]);}
+    CGFloat left=36,top=13,w=MAX(1,rect.size.width-left-8),h=MAX(1,rect.size.height-32);
+    NSDictionary *attrs=@{NSFontAttributeName:RPSTrainingFont(9),NSForegroundColorAttributeName:UIColor.whiteColor};
+    for(int i=0;i<3;i++){CGFloat y=top+h*i/2;UIBezierPath *grid=[UIBezierPath bezierPath];[grid moveToPoint:CGPointMake(left,y)];[grid addLineToPoint:CGPointMake(left+w,y)];[[UIColor colorWithWhite:1 alpha:.25] setStroke];[grid stroke];[[NSString stringWithFormat:@"%.0fk",max*(1-i/2.)/1000] drawAtPoint:CGPointMake(3,y-5) withAttributes:attrs];}
+    UIBezierPath *line=[UIBezierPath bezierPath];BOOL first=YES;for(NSDictionary *p in self.points){CGPoint pt=CGPointMake(left+w*[p[@"seconds"] doubleValue]/end,top+h*(1-[p[@"dps"] doubleValue]/max));if(first)[line moveToPoint:pt];else[line addLineToPoint:pt];first=NO;}
+    [[UIColor colorWithRed:1 green:.85 blue:.46 alpha:1] setStroke];line.lineWidth=1.5;[line stroke];
+    [@"0" drawAtPoint:CGPointMake(left,top+h+3) withAttributes:attrs];[[NSString stringWithFormat:@"%.0fs",end] drawAtPoint:CGPointMake(left+w-28,top+h+3) withAttributes:attrs];
+}
+@end
 
 @interface RPSLocalArtwork : NSObject <WKURLSchemeHandler>
 @property(nonatomic,copy) NSString *documents;
@@ -31,6 +61,7 @@
 @property(nonatomic,strong) NSMutableArray<UIVisualEffectView *> *glassViews;
 @property(nonatomic,copy) NSArray *lastGlassLayout;
 @property(nonatomic,strong) UIButton *exitButton;
+@property(nonatomic,copy) NSString *initialSection;
 @end
 @implementation RPSBattlePanel
 - (void)loadView {
@@ -106,7 +137,7 @@
     self.diagnostics[@"navigationPath"]=actual.isFileURL?(actual.path?:@""):@"non-file";
     decision(allowed?WKNavigationActionPolicyAllow:WKNavigationActionPolicyCancel);
 }
-- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation { self.diagnostics[@"finished"]=@YES;[webView evaluateJavaScript:@"glassLayout()" completionHandler:nil]; }
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation { self.diagnostics[@"finished"]=@YES;[webView evaluateJavaScript:@"glassLayout()" completionHandler:nil];if([self.initialSection isEqual:@"results"])[webView evaluateJavaScript:@"openModal('resultsModal')" completionHandler:nil]; }
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView { self.diagnostics[@"webProcessTerminated"]=@YES;[self closePanel]; }
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     self.diagnostics[@"loadError"]=@(error.code);
@@ -126,7 +157,7 @@
     if(![identifier isKindOfClass:NSNumber.class] || ![action isKindOfClass:NSString.class])return;
     if([action isEqual:@"layout"]){if([body[@"args"] isKindOfClass:NSDictionary.class])[self placeGlass:body[@"args"][@"rects"]];return;}
     if([action isEqual:@"close"]){[self respond:identifier result:@{@"retcode":@0}];[self closePanel];return;}
-    NSSet *allowed=[NSSet setWithArray:@[@"status",@"dpsStart",@"dpsStop",@"dpsAgain",@"bossSpawn",@"bossClear",@"bossAgain",@"restoreHp",@"fillEnergy",@"arenaEnter",@"arenaExit",@"hudToggle"]];
+    NSSet *allowed=[NSSet setWithArray:@[@"status",@"dpsStart",@"dpsStop",@"dpsAgain",@"bossSpawn",@"bossClear",@"bossAgain",@"restoreHp",@"fillEnergy",@"arenaEnter",@"arenaExit",@"hudToggle",@"labPrepare",@"labStart",@"labStop",@"labAgain",@"labAvatar",@"labResetAvatars",@"partyHeal",@"partyRevive",@"partyEnergy"]];
     if(![allowed containsObject:action])return;
     NSString *token=[NSString stringWithContentsOfFile:[self.storage stringByAppendingPathComponent:@"server/local-maintenance.token"] encoding:NSUTF8StringEncoding error:nil];
     if(!token.length){[self respond:identifier result:@{@"retcode":@-1,@"message":@"本机服务还在准备，请稍候。"}];return;}
@@ -162,6 +193,12 @@
 @property(nonatomic,strong) RPSOverlayWindow *overlay;
 @property(nonatomic,strong) UIButton *button;
 @property(nonatomic,strong) UILabel *message;
+@property(nonatomic,strong) UILabel *trainingDetails;
+@property(nonatomic,strong) UILabel *trainingPanel;
+@property(nonatomic,strong) RPSTrainingChart *trainingChart;
+@property(nonatomic,strong) UIButton *trainingInteraction;
+@property(nonatomic,strong) UIButton *trainingReport;
+@property(nonatomic) BOOL trainingRequest;
 @property(nonatomic,strong) NSDictionary *service;
 @property(nonatomic,strong) NSDate *began;
 @property(nonatomic,strong) NSDate *readyAt;
@@ -195,6 +232,14 @@
     self.message.textColor=UIColor.whiteColor; self.message.backgroundColor=[UIColor colorWithWhite:0.08 alpha:0.85];
     self.message.layer.cornerRadius=10; self.message.clipsToBounds=YES;
     [self.view addSubview:self.message];
+    self.trainingDetails=[UILabel new];self.trainingPanel=[UILabel new];
+    for(UILabel *label in @[self.trainingDetails,self.trainingPanel]){label.font=RPSTrainingFont(11);label.numberOfLines=0;label.textColor=UIColor.whiteColor;label.backgroundColor=[UIColor colorWithWhite:0 alpha:.28];label.layer.cornerRadius=8;label.clipsToBounds=YES;label.hidden=YES;[self.view addSubview:label];}
+    self.trainingChart=[RPSTrainingChart new];self.trainingChart.userInteractionEnabled=NO;self.trainingChart.hidden=YES;self.trainingChart.layer.cornerRadius=8;self.trainingChart.clipsToBounds=YES;[self.view addSubview:self.trainingChart];
+    self.trainingInteraction=[UIButton buttonWithType:UIButtonTypeSystem];self.trainingReport=[UIButton buttonWithType:UIButtonTypeSystem];
+    for(UIButton *b in @[self.trainingInteraction,self.trainingReport]){b.backgroundColor=[UIColor colorWithWhite:.08 alpha:.7];b.tintColor=UIColor.whiteColor;b.titleLabel.font=RPSTrainingFont(14);b.layer.cornerRadius=21;b.layer.borderWidth=1;b.layer.borderColor=[UIColor colorWithWhite:1 alpha:.5].CGColor;b.hidden=YES;[self.view addSubview:b];}
+    self.trainingInteraction.accessibilityIdentifier=@"training-interaction";self.trainingReport.accessibilityIdentifier=@"training-report";
+    [self.trainingInteraction addTarget:self action:@selector(trainingInteract) forControlEvents:UIControlEventTouchUpInside];
+    [self.trainingReport setTitle:@"战斗报告" forState:UIControlStateNormal];[self.trainingReport addTarget:self action:@selector(showTrainingReport) forControlEvents:UIControlEventTouchUpInside];
     UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [self.button.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],
@@ -210,7 +255,7 @@
 - (void)start:(NSString *)storage {
     if(self.storage) return;
     self.storage=storage; self.began=NSDate.date;
-    [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer){ [self update]; }];
+    [NSTimer scheduledTimerWithTimeInterval:.5 repeats:YES block:^(NSTimer *timer){ [self update]; }];
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil
         queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification){
             if(!self.readyAt || self.saving) return;
@@ -248,6 +293,7 @@
     BOOL healthy=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<20 && [self.service[@"ready"] boolValue];
     NSDictionary *dps=[self.service[@"dps"] isKindOfClass:NSDictionary.class]?self.service[@"dps"]:nil;
     BOOL testing=healthy && [dps[@"active"] boolValue];
+    BOOL lab=healthy && [dps[@"mode"] isEqual:@"lab"];
     NSInteger elapsed=(NSInteger)-self.began.timeIntervalSinceNow;
     NSString *title=healthy ? @"本机 · 就绪" : failed ? @"本机 · 异常" : @"本机 · 准备中";
     if(healthy && [self.service[@"lastError"] length])title=@"本机 · 保存待确认";
@@ -264,6 +310,12 @@
         self.message.text=[NSString stringWithFormat:@"  %@ · %@ 次命中  \n  总伤害 %.0f · 平均 DPS %.0f  ",clock,dps[@"hitCount"]?:@0,[dps[@"totalDamage"] doubleValue],[dps[@"averageDps"] doubleValue]];
         if(-self.lastResponse.timeIntervalSinceNow>3 || [self.service[@"statisticsPending"] boolValue]) self.message.text=@"  战斗统计正在同步…  ";
     }
+    if(lab && ![self.service[@"hideDpsHud"] boolValue]){
+        self.message.hidden=NO;self.message.font=RPSTrainingFont(13);
+        NSString *time=[dps[@"phase"] isEqual:@"countdown"]?[NSString stringWithFormat:@"准备 · %@",dps[@"countdown"]?:@3]:[NSString stringWithFormat:@"%.1f 秒",[dps[@"elapsedSeconds"] doubleValue]];
+        self.message.text=[NSString stringWithFormat:@"  %@　DPS %.0f  \n  累计 %.0f　最高一击 %.0f  ",time,[dps[@"averageDps"] doubleValue],[dps[@"totalDamage"] doubleValue],[dps[@"maxHit"] doubleValue]];
+    }
+    [self updateTrainingHUD:lab?dps:nil];
     NSDictionary *finished=[self.service[@"lastTrainingResult"] isKindOfClass:NSDictionary.class]?self.service[@"lastTrainingResult"]:nil;
     NSString *resultId=finished[@"id"];
     if(resultId.length && ![resultId isEqualToString:self.lastResultId]){
@@ -276,7 +328,51 @@
         self.message.hidden=NO;
         self.message.text=[NSString stringWithFormat:@"  %@ · %@  \n  总伤害 %.0f · DPS %.0f · 在「成绩」查看占比  ",finished[@"title"]?:@"训练",finished[@"outcome"]?:@"完成",[finished[@"totalDamage"] doubleValue],[finished[@"averageDps"] doubleValue]];
     }
-    if((++self.ticks%5==0 || testing) && !self.fetching) [self request:@"status" completion:^(NSDictionary *result){}];
+    if((++self.ticks%10==0 || testing || lab) && !self.fetching) [self request:@"status" completion:^(NSDictionary *result){}];
+}
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];CGRect area=UIEdgeInsetsInsetRect(self.view.bounds,self.view.safeAreaInsets);BOOL wide=area.size.width>area.size.height;
+    CGFloat offset=wide?80:118,width=MIN(wide?220:170,area.size.width*.40),left=area.origin.x+10,top=area.origin.y+offset;
+    CGFloat height=MIN(90,MAX(60,(area.size.height-offset-22)/3)),next=top;
+    self.trainingDetails.frame=CGRectMake(left,next,width,height);if(!self.trainingDetails.hidden)next+=height+5;
+    self.trainingChart.frame=CGRectMake(left,next,width,height);if(!self.trainingChart.hidden)next+=height+5;
+    self.trainingPanel.frame=CGRectMake(left,next,width,height);
+    self.trainingInteraction.frame=CGRectMake(area.origin.x+area.size.width*.55,area.origin.y+area.size.height*.46,MIN(160,area.size.width*.40),44);
+    self.trainingReport.frame=CGRectMake(area.origin.x+area.size.width*.40,CGRectGetMaxY(area)-56,120,44);
+}
+- (void)updateTrainingHUD:(NSDictionary *)dps {
+    NSDictionary *config=dps[@"config"];BOOL exists=dps!=nil;
+    self.trainingInteraction.hidden=!exists||(![dps[@"canStart"] boolValue]&&![dps[@"active"] boolValue]&&![dps[@"phase"] isEqual:@"finished"]);
+    self.trainingInteraction.enabled=!self.trainingRequest;
+    NSString *action=[dps[@"phase"] isEqual:@"finished"]?@"再次布置":([dps[@"active"] boolValue]?@"停止计时":@"开始挑战");[self.trainingInteraction setTitle:action forState:UIControlStateNormal];
+    self.trainingReport.hidden=!exists;
+    self.trainingChart.hidden=!exists||![config[@"chart"] boolValue];self.trainingChart.points=dps[@"curve"]?:@[];[self.trainingChart setNeedsDisplay];
+    self.trainingDetails.hidden=!exists||![config[@"resistanceHud"] boolValue];
+    NSArray *keys=@[@"physical",@"fire",@"water",@"ice",@"electric",@"grass",@"wind",@"rock"],*names=@[@"物",@"火",@"水",@"冰",@"雷",@"草",@"风",@"岩"];
+    NSMutableString *res=[NSMutableString stringWithFormat:@"  等级 %@ · 防御 %@%%\n",config[@"level"]?:@100,config[@"defense"]?:@100];
+    for(NSUInteger i=0;i<keys.count;i++){NSString *value=[config[@"immunities"] containsObject:keys[i]]?@"免疫":[NSString stringWithFormat:@"%@%%",config[@"resistances"][keys[i]]?:@10];[res appendFormat:@"  %@ %@%@",names[i],value,i%2?@"\n":@"　"];}
+    self.trainingDetails.text=res;
+    NSDictionary *a=dps[@"activePanel"];self.trainingPanel.hidden=!exists||!a;
+    if(a)self.trainingPanel.text=[NSString stringWithFormat:@"  %@\n  生命 %.0f　攻击 %.0f\n  防御 %.0f　精通 %.0f\n  暴击 %.1f%%　暴伤 %.1f%%\n  充能 %.1f%%",a[@"name"]?:@"",[a[@"hp"] doubleValue],[a[@"attack"] doubleValue],[a[@"defense"] doubleValue],[a[@"mastery"] doubleValue],[a[@"crit"] doubleValue],[a[@"critDamage"] doubleValue],[a[@"recharge"] doubleValue]];
+    [self.view setNeedsLayout];
+}
+- (void)trainingInteract {
+    if(self.trainingRequest)return;NSDictionary *dps=self.service[@"dps"];
+    NSString *action=[dps[@"phase"] isEqual:@"finished"]?@"labAgain":([dps[@"active"] boolValue]?@"labStop":@"labStart");
+    NSString *token=[NSString stringWithContentsOfFile:[self.storage stringByAppendingPathComponent:@"server/local-maintenance.token"] encoding:NSUTF8StringEncoding error:nil];if(!token.length)return;
+    self.trainingRequest=YES;self.trainingInteraction.enabled=NO;
+    NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://127.0.0.1:8088/local/manage/training-action"]];request.HTTPMethod=@"POST";request.timeoutInterval=6;[request setValue:token forHTTPHeaderField:@"X-Local-Maintenance"];[request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];request.HTTPBody=[NSJSONSerialization dataWithJSONObject:@{@"action":action,@"args":@{}} options:0 error:nil];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error){NSDictionary *result=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;dispatch_async(dispatch_get_main_queue(), ^{
+        self.trainingRequest=NO;self.trainingInteraction.enabled=YES;if(!error&&[result[@"retcode"] isEqual:@0]){NSMutableDictionary *service=[self.service mutableCopy];service[@"dps"]=result[@"dps"]?:@{};self.service=service;[self update];}else{self.message.hidden=NO;self.message.text=result[@"message"]?:@"操作未完成，请稍后再试。";}
+    });}] resume];
+}
+- (void)showTrainingReport {
+    [self showTraining];UINavigationController *nav=(UINavigationController *)self.presentedViewController;
+    if([nav.topViewController isKindOfClass:RPSBattlePanel.class]){
+        RPSBattlePanel *panel=(RPSBattlePanel *)nav.topViewController;
+        panel.initialSection=@"results";
+        [panel.web evaluateJavaScript:@"typeof openModal==='function'&&openModal('resultsModal')" completionHandler:nil];
+    }
 }
 - (void)request:(NSString *)operation completion:(void (^)(NSDictionary *))completion {
     BOOL status=[operation isEqualToString:@"status"];

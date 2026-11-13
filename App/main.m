@@ -147,12 +147,17 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         UILabel *dpsLabel=[controller valueForKey:@"message"];
         checks[@"live_dps_label"]=@(!dpsLabel.hidden && [dpsLabel.text containsString:@"42 秒"] && [dpsLabel.text containsString:@"180 次命中"]);
+        NSDictionary *lab=@{@"mode":@"lab",@"phase":@"ready",@"active":@NO,@"canStart":@YES,@"elapsedSeconds":@0,@"totalDamage":@123456,@"averageDps":@12345,@"maxHit":@98765,@"config":@{@"level":@105,@"defense":@100,@"chart":@YES,@"resistanceHud":@YES,@"resistances":@{@"fire":@70}},@"curve":@[@{@"seconds":@0,@"dps":@0},@{@"seconds":@1,@"dps":@4000}],@"activePanel":@{@"name":@"测试角色",@"hp":@22000,@"attack":@1500,@"defense":@800,@"mastery":@270,@"crit":@75,@"critDamage":@180,@"recharge":@140}};
+        [controller setValue:@{@"ready":@YES,@"dps":lab} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        UIButton *interaction=[controller valueForKey:@"trainingInteraction"];
+        checks[@"idle_dummy_proximity_interaction"]=@(!interaction.hidden&&[interaction.currentTitle isEqual:@"开始挑战"]);
+        checks[@"lab_hud_max_hit_and_chart"]=@([dpsLabel.text containsString:@"98765"]&&![[controller valueForKey:@"trainingChart"] isHidden]&&![[controller valueForKey:@"trainingPanel"] isHidden]&&![[controller valueForKey:@"trainingDetails"] isHidden]);
         UIView *root=[controller view];CGRect original=root.frame;
         NSMutableArray *layouts=[NSMutableArray new];BOOL within=YES;
         CGSize sizes[]={{375,812},{812,375},{768,1024},{1024,768}};
         for(int i=0;i<4;i++){
             root.frame=(CGRect){CGPointZero,sizes[i]};[root setNeedsLayout];[root layoutIfNeeded];
-            BOOL fit=CGRectContainsRect(root.bounds,button.frame);within &= fit;
+            BOOL fit=CGRectContainsRect(root.bounds,button.frame)&&CGRectContainsRect(root.bounds,interaction.frame)&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingChart"] frame])&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingPanel"] frame]);within &= fit;
             [layouts addObject:@{@"width":@(sizes[i].width),@"height":@(sizes[i].height),@"buttonFits":@(fit)}];
         }
         root.frame=original;[root setNeedsLayout];[root layoutIfNeeded];
