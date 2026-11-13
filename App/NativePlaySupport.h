@@ -1,6 +1,70 @@
 // Small host controls for a self-contained local runtime. No account credentials or external services.
 #import <WebKit/WebKit.h>
 
+@interface RPSBattlePanel : UIViewController <WKScriptMessageHandler,WKNavigationDelegate>
+@property(nonatomic,strong) WKWebView *web;
+@property(nonatomic,copy) NSString *storage;
+@property(nonatomic,weak) UIWindow *previousKey;
+@end
+@implementation RPSBattlePanel
+- (void)loadView {
+    WKWebViewConfiguration *config=[WKWebViewConfiguration new];
+    [config.userContentController addScriptMessageHandler:self name:@"training"];
+    self.web=[[WKWebView alloc] initWithFrame:CGRectZero configuration:config];self.web.navigationDelegate=self;
+    self.web.opaque=NO;self.web.backgroundColor=[UIColor colorWithRed:0.063 green:0.098 blue:0.137 alpha:1];
+    self.view=self.web;self.title=@"木桩训练场";
+    self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"返回游戏" style:UIBarButtonItemStyleDone target:self action:@selector(closePanel)];
+    NSURL *file=[NSURL fileURLWithPath:[self.storage.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"battle-training.html"]];
+    [self.web loadFileURL:file allowingReadAccessToURL:file];
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    for(UIWindow *window in self.view.window.windowScene.windows)if(window.isKeyWindow && window!=self.view.window)self.previousKey=window;
+    [self.view.window makeKeyWindow];
+}
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];[self.previousKey makeKeyWindow];
+    [self.web.configuration.userContentController removeScriptMessageHandlerForName:@"training"];
+}
+- (void)closePanel { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)action decisionHandler:(void (^)(WKNavigationActionPolicy))decision {
+    NSURL *expected=[NSURL fileURLWithPath:[self.storage.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"battle-training.html"]];
+    decision(action.request.URL.isFileURL && [action.request.URL.path isEqual:expected.path]?WKNavigationActionPolicyAllow:WKNavigationActionPolicyCancel);
+}
+- (void)respond:(NSNumber *)identifier result:(NSDictionary *)result {
+    NSData *json=[NSJSONSerialization dataWithJSONObject:@{@"id":identifier,@"payload":result} options:0 error:nil];
+    if(!json)return;
+    NSString *script=[@"window.trainingReply(" stringByAppendingString:[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]];
+    [self.web evaluateJavaScript:[script stringByAppendingString:@");"] completionHandler:nil];
+}
+- (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
+    if(!message.frameInfo.isMainFrame || ![message.body isKindOfClass:NSDictionary.class])return;
+    NSDictionary *body=message.body;NSNumber *identifier=body[@"id"];NSString *action=body[@"action"];
+    if(![identifier isKindOfClass:NSNumber.class] || ![action isKindOfClass:NSString.class])return;
+    if([action isEqual:@"close"]){[self respond:identifier result:@{@"retcode":@0}];[self closePanel];return;}
+    NSSet *allowed=[NSSet setWithArray:@[@"status",@"dpsStart",@"dpsStop",@"dpsAgain",@"bossSpawn",@"bossClear",@"bossAgain",@"restoreHp",@"fillEnergy",@"arenaEnter",@"arenaExit",@"hudToggle"]];
+    if(![allowed containsObject:action])return;
+    NSString *token=[NSString stringWithContentsOfFile:[self.storage stringByAppendingPathComponent:@"server/local-maintenance.token"] encoding:NSUTF8StringEncoding error:nil];
+    if(!token.length){[self respond:identifier result:@{@"retcode":@-1,@"message":@"本机服务还在准备，请稍候。"}];return;}
+    BOOL status=[action isEqual:@"status"];
+    NSURL *url=[NSURL URLWithString:status?@"http://127.0.0.1:8088/local/manage/training":@"http://127.0.0.1:8088/local/manage/training-action"];
+    NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:url];request.HTTPMethod=status?@"GET":@"POST";request.timeoutInterval=6;
+    [request setValue:token forHTTPHeaderField:@"X-Local-Maintenance"];
+    if(!status){
+        NSDictionary *args=[body[@"args"] isKindOfClass:NSDictionary.class]?body[@"args"]:@{};
+        request.HTTPBody=[NSJSONSerialization dataWithJSONObject:@{@"action":action,@"args":args} options:0 error:nil];
+        if(!request.HTTPBody || request.HTTPBody.length>4096)return;
+        [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    }
+    __weak RPSBattlePanel *weakSelf=self;
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error){
+        id value=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
+        NSDictionary *result=(!error && [value isKindOfClass:NSDictionary.class])?value:@{@"retcode":@-1,@"message":@"本机服务暂未响应，请等待世界恢复。"};
+        dispatch_async(dispatch_get_main_queue(), ^{[weakSelf respond:identifier result:result];});
+    }] resume];
+}
+@end
+
 @interface RPSOverlayWindow : UIWindow
 @end
 @implementation RPSOverlayWindow
@@ -102,7 +166,7 @@
     else if(self.readyAt) self.message.text=@"  正在检查本机服务，请稍候。  ";
     else self.message.text=[NSString stringWithFormat:@"  正在准备世界 · 已用 %ld:%02ld  \n  请保持游戏在前台，等显示就绪再登录。  ",(long)elapsed/60,(long)elapsed%60];
     self.message.hidden=healthy && -self.readyAt.timeIntervalSinceNow>10;
-    if(testing){
+    if(testing && ![self.service[@"hideDpsHud"] boolValue]){
         self.message.hidden=NO;
         self.message.text=[NSString stringWithFormat:@"  木桩 · 剩余 %@ 秒 · %@ 次命中  \n  总伤害 %.0f · 平均 DPS %.0f  ",
                 dps[@"remainingSeconds"]?:@0,dps[@"hitCount"]?:@0,[dps[@"totalDamage"] doubleValue],[dps[@"averageDps"] doubleValue]];
@@ -181,11 +245,21 @@
     [self presentViewController:navigation animated:YES completion:nil];
 }
 - (void)closeGuide { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)showTraining {
+    if(self.presentedViewController)return;
+    NSString *path=[self.storage.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"battle-training.html"];
+    if(![NSFileManager.defaultManager fileExistsAtPath:path]){[self message:@"训练台正在准备，请等本机服务就绪后再打开。"];return;}
+    RPSBattlePanel *panel=[RPSBattlePanel new];panel.storage=self.storage;
+    UINavigationController *navigation=[[UINavigationController alloc] initWithRootViewController:panel];
+    navigation.modalPresentationStyle=UIModalPresentationFullScreen;
+    [self presentViewController:navigation animated:YES completion:nil];
+}
 - (void)showStatus {
     if(self.presentedViewController) return;
     NSString *state=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<20?@"本机服务已响应":@"尚未就绪，请保持前台等待";
     NSString *text=[NSString stringWithFormat:@"%@\n最近保存：%@\n签名到期：%@\n\n续签需要 SideStore；日常游玩无需另开服务端。",state,[self localDate:self.service[@"fullSaveAt"]],[self expiry]];
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"本机游玩" message:text preferredStyle:UIAlertControllerStyleAlert];
+    [menu addAction:[UIAlertAction actionWithTitle:@"木桩训练场" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self showTraining];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"保存进度" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self save:NO];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"备份并导出" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self save:YES];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"使用手册与命令" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self guide];}]];

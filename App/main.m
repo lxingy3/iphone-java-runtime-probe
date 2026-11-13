@@ -124,6 +124,8 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
     NSString *server=[storage stringByAppendingPathComponent:@"server"];
     [NSFileManager.defaultManager createDirectoryAtPath:server withIntermediateDirectories:YES attributes:nil error:nil];
     [@"FIXTURE_MAINTENANCE" writeToFile:[server stringByAppendingPathComponent:@"local-maintenance.token"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSData *trainingHTML=[NSData dataWithContentsOfFile:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"battle-training.html"]];
+    [trainingHTML writeToFile:[documents stringByAppendingPathComponent:@"battle-training.html"] atomically:YES];
     id controller=((id(*)(id,SEL))objc_msgSend)(NSClassFromString(@"RPSPlaySupport"),sel_registerName("shared"));
     ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("start:"),storage);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,9*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
@@ -156,15 +158,31 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("showStatus"));
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(), ^{
             UIAlertController *menu=[controller presentedViewController];
-            checks[@"menu_actions"]=@([menu isKindOfClass:UIAlertController.class] && menu.actions.count==4);
+            checks[@"menu_actions"]=@([menu isKindOfClass:UIAlertController.class] && menu.actions.count==5 && [menu.actions.firstObject.title isEqual:@"木桩训练场"]);
             UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:overlay.bounds.size];
             NSData *png=[renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *ctx){[overlay drawViewHierarchyInRect:overlay.bounds afterScreenUpdates:YES];}];
             [png writeToFile:[documents stringByAppendingPathComponent:@"play-support-menu.png"] atomically:YES];
             [controller dismissViewControllerAnimated:NO completion:^{
                 checks[@"menu_dismisses"]=@([controller presentedViewController]==nil);
-                BOOL passed=YES;for(NSNumber *value in checks.allValues)passed &= value.boolValue;
-                NSDictionary *report=@{@"passed":@(passed),@"checks":checks,@"layouts":layouts,@"physical_fold_verified":@NO,@"actual_game_tested":@NO};
-                [[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil] writeToFile:[documents stringByAppendingPathComponent:@"play-support-fixture.json"] atomically:YES];
+                ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("showTraining"));
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,4*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
+                    UINavigationController *nav=[controller presentedViewController];
+                    UIViewController *panel=nav.topViewController;WKWebView *web=[panel valueForKey:@"web"];
+                    checks[@"training_takes_keyboard_focus"]=@(overlay.isKeyWindow);
+                    [web evaluateJavaScript:@"JSON.stringify({ready:document.getElementById('health').textContent,start:document.getElementById('start').disabled,bosses:document.querySelectorAll('.boss').length,overflow:document.documentElement.scrollWidth>window.innerWidth})" completionHandler:^(id value,NSError *error){
+                        NSDictionary *render=[value isKindOfClass:NSString.class]?[NSJSONSerialization JSONObjectWithData:[value dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]:nil;
+                        checks[@"training_loaded_authenticated_status"]=@(!error && [render[@"ready"] isEqual:@"世界已连接"] && ![render[@"start"] boolValue] && [render[@"bosses"] intValue]==2 && ![render[@"overflow"] boolValue]);
+                        NSData *shot=[renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *ctx){[overlay drawViewHierarchyInRect:overlay.bounds afterScreenUpdates:YES];}];
+                        [shot writeToFile:[documents stringByAppendingPathComponent:@"training-panel.png"] atomically:YES];
+                        [web evaluateJavaScript:@"document.getElementById('start').click()" completionHandler:nil];
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
+                            checks[@"training_action_closes_and_restores_game_focus"]=@([controller presentedViewController]==nil && gameWindow.isKeyWindow && !overlay.isKeyWindow);
+                            BOOL passed=YES;for(NSNumber *v in checks.allValues)passed &= v.boolValue;
+                            NSDictionary *report=@{@"passed":@(passed),@"checks":checks,@"layouts":layouts,@"physical_fold_verified":@NO,@"actual_game_tested":@NO};
+                            [[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil] writeToFile:[documents stringByAppendingPathComponent:@"play-support-fixture.json"] atomically:YES];
+                        });
+                    }];
+                });
             }];
         });
     });
