@@ -245,30 +245,22 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 }
 @end
 
-// The visible handle is narrow; its 44-point control remains easy to grab.
-// All subviews pass touches to the button. The rest of the overlay stays transparent.
-@interface RPSEdgeHandle : UIButton
-@property(nonatomic,strong) UIVisualEffectView *glass;
-@property(nonatomic,strong) UIImageView *chevron;
+// A small minimap accessory with a full-size touch target and no sidebar surface.
+@interface RPSMinimapButton : UIButton
+@property(nonatomic,strong) UIImageView *symbol;
 @end
-@implementation RPSEdgeHandle
+@implementation RPSMinimapButton
 - (instancetype)initWithFrame:(CGRect)frame {
     if((self=[super initWithFrame:frame])){
-        self.clipsToBounds=YES;
-        self.glass=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
-        self.glass.userInteractionEnabled=NO;self.glass.layer.cornerRadius=20;self.glass.clipsToBounds=YES;
-        self.glass.layer.borderWidth=1;self.glass.layer.borderColor=[UIColor colorWithRed:.91 green:.80 blue:.53 alpha:.9].CGColor;
-        self.glass.contentView.backgroundColor=[UIColor colorWithRed:.96 green:.92 blue:.79 alpha:.12];
-        [self addSubview:self.glass];
-        self.chevron=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold]]];
-        self.chevron.contentMode=UIViewContentModeScaleAspectFit;self.chevron.tintColor=[UIColor colorWithRed:1 green:.94 blue:.75 alpha:1];self.chevron.userInteractionEnabled=NO;
-        [self addSubview:self.chevron];
-        self.accessibilityLabel=@"本机菜单";self.accessibilityHint=@"轻点或向右拖动打开";
+        self.backgroundColor=UIColor.clearColor;
+        self.symbol=[[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"star.fill" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightRegular]]];
+        self.symbol.contentMode=UIViewContentModeScaleAspectFit;self.symbol.tintColor=[UIColor colorWithRed:1 green:.96 blue:.81 alpha:.85];self.symbol.userInteractionEnabled=NO;
+        self.symbol.layer.shadowColor=UIColor.blackColor.CGColor;self.symbol.layer.shadowOpacity=.45;self.symbol.layer.shadowRadius=2;self.symbol.layer.shadowOffset=CGSizeMake(0,1);
+        [self addSubview:self.symbol];self.accessibilityLabel=@"本机菜单";
     }return self;
 }
 - (void)layoutSubviews {
-    [super layoutSubviews];self.glass.frame=CGRectMake(-18,0,42,self.bounds.size.height);
-    self.chevron.frame=CGRectMake(6,CGRectGetMidY(self.bounds)-10,12,20);
+    [super layoutSubviews];self.symbol.frame=CGRectMake(CGRectGetMidX(self.bounds)-10,CGRectGetMidY(self.bounds)-10,20,20);
 }
 @end
 
@@ -297,6 +289,9 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 @property(nonatomic) NSInteger ticks;
 @property(nonatomic,copy) NSString *visibleStatus;
 @property(nonatomic,strong) NSDate *statusChangedAt;
+@property(nonatomic) BOOL messageVisible;
+@property(nonatomic,weak) UIAlertController *statusMenu;
+@property(nonatomic,copy) NSString *statusMenuExpiry;
 + (instancetype)shared;
 - (void)start:(NSString *)storage;
 @end
@@ -305,11 +300,9 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 + (instancetype)shared { static id value; static dispatch_once_t once; dispatch_once(&once, ^{ value=[self new]; }); return value; }
 - (void)loadView {
     self.view=[RPSAdaptiveView new]; self.view.backgroundColor=UIColor.clearColor;
-    self.button=[[RPSEdgeHandle alloc] initWithFrame:CGRectZero];
+    self.button=[[RPSMinimapButton alloc] initWithFrame:CGRectZero];
     self.button.accessibilityIdentifier=@"local-play-status";
     [self.button addTarget:self action:@selector(showStatus) forControlEvents:UIControlEventTouchUpInside];
-    UIPanGestureRecognizer *pull=[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pullMenu:)];
-    pull.minimumNumberOfTouches=1;pull.maximumNumberOfTouches=1;[self.button addGestureRecognizer:pull];
     [self.view addSubview:self.button];
     self.message=[UILabel new];
     self.message.numberOfLines=0; self.message.textAlignment=NSTextAlignmentCenter;
@@ -317,6 +310,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.message.adjustsFontForContentSizeCategory=YES;
     self.message.textColor=UIColor.whiteColor; self.message.backgroundColor=[UIColor colorWithWhite:0.08 alpha:0.85];
     self.message.layer.cornerRadius=10; self.message.clipsToBounds=YES;
+    self.message.hidden=YES;self.message.alpha=0;self.message.userInteractionEnabled=NO;
     [self.view addSubview:self.message];
     self.trainingDetails=[UILabel new];self.trainingPanel=[UILabel new];
     for(UILabel *label in @[self.trainingDetails,self.trainingPanel]){label.font=RPSTrainingFont(11);label.numberOfLines=0;label.textColor=UIColor.whiteColor;label.backgroundColor=[UIColor colorWithWhite:0 alpha:.28];label.layer.cornerRadius=8;label.clipsToBounds=YES;label.hidden=YES;[self.view addSubview:label];}
@@ -344,14 +338,6 @@ static UIFont *RPSTrainingFont(CGFloat size) {
             }];
         }];
     [self update];
-}
-- (void)pullMenu:(UIPanGestureRecognizer *)gesture {
-    CGPoint delta=[gesture translationInView:self.view];
-    if(gesture.state==UIGestureRecognizerStateChanged){self.button.transform=CGAffineTransformMakeTranslation(MIN(12,MAX(0,delta.x)),0);return;}
-    if(gesture.state==UIGestureRecognizerStateEnded||gesture.state==UIGestureRecognizerStateCancelled){
-        [UIView animateWithDuration:.16 animations:^{self.button.transform=CGAffineTransformIdentity;}];
-        if(gesture.state==UIGestureRecognizerStateEnded&&delta.x>=24&&delta.x>fabs(delta.y)) [self showStatus];
-    }
 }
 - (void)attach {
     if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) return;
@@ -385,20 +371,20 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.button.accessibilityValue=title;
     if(![readiness isEqualToString:self.visibleStatus]){self.visibleStatus=readiness;self.statusChangedAt=NSDate.date;}
     if(healthy && !self.readyAt) self.readyAt=NSDate.date;
-    if(healthy) self.message.text=@"  本机服务已就绪  ";
-    else if(failed) self.message.text=@"  本机启动异常 · 左侧查看  ";
-    else if(self.readyAt) self.message.text=@"  正在等待本机响应  ";
-    else self.message.text=@"  正在准备世界 · 左侧查看进度  ";
-    // Brief transition notice only; readiness and save details live in the menu.
-    self.message.hidden=!self.statusChangedAt || -self.statusChangedAt.timeIntervalSinceNow>3;
+    if(healthy) self.message.text=@"本机已就绪";
+    else if(failed) self.message.text=@"本机启动异常";
+    else if(self.readyAt) self.message.text=@"等待本机响应…";
+    else {NSInteger elapsed=MAX(0,(NSInteger)-self.began.timeIntervalSinceNow);self.message.text=[NSString stringWithFormat:@"本机加载中 · %ld:%02ld",(long)elapsed/60,(long)elapsed%60];}
+    // Loading remains visible for its entire duration; only a confirmed ready state fades.
+    BOOL showMessage=!healthy||!self.statusChangedAt||-self.statusChangedAt.timeIntervalSinceNow<1.5;
     if(testing && ![self.service[@"hideDpsHud"] boolValue]){
-        self.message.hidden=NO;
+        showMessage=YES;
         NSString *clock=[dps[@"mode"] isEqual:@"boss"]?[NSString stringWithFormat:@"%@ · %.0f 秒",dps[@"title"]?:@"挑战",[dps[@"elapsedSeconds"] doubleValue]]:[NSString stringWithFormat:@"木桩 · 剩余 %@ 秒",dps[@"remainingSeconds"]?:@0];
         self.message.text=[NSString stringWithFormat:@"  %@ · %@ 次命中  \n  总伤害 %.0f · 平均 DPS %.0f  ",clock,dps[@"hitCount"]?:@0,[dps[@"totalDamage"] doubleValue],[dps[@"averageDps"] doubleValue]];
         if(-self.lastResponse.timeIntervalSinceNow>3 || [self.service[@"statisticsPending"] boolValue]) self.message.text=@"  战斗统计正在同步…  ";
     }
     if(lab && ![self.service[@"hideDpsHud"] boolValue]){
-        self.message.hidden=NO;self.message.font=RPSTrainingFont(13);
+        showMessage=YES;self.message.font=RPSTrainingFont(13);
         NSString *time=[dps[@"phase"] isEqual:@"countdown"]?[NSString stringWithFormat:@"准备 · %@",dps[@"countdown"]?:@3]:[NSString stringWithFormat:@"%.1f 秒",[dps[@"elapsedSeconds"] doubleValue]];
         self.message.text=[NSString stringWithFormat:@"  %@　DPS %.0f  \n  累计 %.0f　最高一击 %.0f  ",time,[dps[@"averageDps"] doubleValue],[dps[@"totalDamage"] doubleValue],[dps[@"maxHit"] doubleValue]];
         if(-self.lastResponse.timeIntervalSinceNow>3 || [self.service[@"statisticsPending"] boolValue])self.message.text=@"  战斗统计正在同步…  ";
@@ -413,17 +399,26 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         if(at && [at compare:self.began]!=NSOrderedAscending)self.resultReceivedAt=NSDate.date;
     }
     if(!testing && healthy && self.resultReceivedAt && -self.resultReceivedAt.timeIntervalSinceNow<12 && ![self.service[@"hideDpsHud"] boolValue]){
-        self.message.hidden=NO;
+        showMessage=YES;
         self.message.text=[NSString stringWithFormat:@"  %@ · %@  \n  总伤害 %.0f · DPS %.0f · 在「成绩」查看占比  ",finished[@"title"]?:@"训练",finished[@"outcome"]?:@"完成",[finished[@"totalDamage"] doubleValue],[finished[@"averageDps"] doubleValue]];
     }
-    if((++self.ticks%10==0 || testing || lab || [dps[@"inArena"] boolValue]) && !self.fetching) [self request:@"status" completion:^(NSDictionary *result){}];
+    [self setStatusMessageVisible:showMessage];
+    [self refreshStatusMenu];
+    NSInteger interval=(!healthy||self.statusMenu)?2:10;
+    if((++self.ticks%interval==0 || testing || lab || [dps[@"inArena"] boolValue]) && !self.fetching) [self request:@"status" completion:^(NSDictionary *result){}];
+}
+- (void)setStatusMessageVisible:(BOOL)visible {
+    if(self.messageVisible==visible)return;
+    self.messageVisible=visible;[self.message.layer removeAllAnimations];
+    if(visible){self.message.hidden=NO;self.message.alpha=1;return;}
+    [UIView animateWithDuration:.35 delay:0 options:UIViewAnimationOptionBeginFromCurrentState|UIViewAnimationOptionAllowUserInteraction animations:^{self.message.alpha=0;} completion:^(BOOL finished){if(!self.messageVisible)self.message.hidden=YES;}];
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];NSArray<NSValue *> *regions=[(RPSAdaptiveView *)self.view contentRegions];CGRect area=regions.firstObject.CGRectValue,controls=regions.lastObject.CGRectValue;
-    CGFloat handleHeight=MIN(64,area.size.height);self.button.transform=CGAffineTransformIdentity;
-    self.button.frame=CGRectMake(area.origin.x,MIN(CGRectGetMaxY(area)-handleHeight,MAX(area.origin.y,area.origin.y+area.size.height*.45-handleHeight/2)),MIN(44,area.size.width),handleHeight);
-    CGFloat messageWidth=MIN(390,MAX(44,area.size.width-24));CGSize messageSize=[self.message sizeThatFits:CGSizeMake(messageWidth,CGFLOAT_MAX)];
-    self.message.frame=CGRectMake(CGRectGetMidX(area)-messageWidth/2,area.origin.y+8,messageWidth,MIN(90,messageSize.height));
+    self.button.frame=CGRectMake(area.origin.x+MIN(138,MAX(0,area.size.width*.18)),area.origin.y+8,MIN(44,area.size.width),44);
+    CGFloat messageLimit=MIN(390,MAX(44,area.size.width-24));CGSize messageSize=[self.message sizeThatFits:CGSizeMake(messageLimit-24,CGFLOAT_MAX)];
+    CGFloat messageWidth=MIN(messageLimit,MAX(120,messageSize.width+24));
+    self.message.frame=CGRectMake(CGRectGetMidX(area)-messageWidth/2,area.origin.y+8,messageWidth,MIN(90,MAX(30,messageSize.height+12)));
     CGFloat offset=MAX(80,CGRectGetMaxY(self.message.frame)-area.origin.y+8),width=MIN(220,area.size.width*.45),left=area.origin.x+10,top=area.origin.y+offset;
     CGFloat height=MIN(90,MAX(34,(area.size.height-offset-22)/3)),next=top;
     self.trainingDetails.frame=CGRectMake(left,next,width,height);if(!self.trainingDetails.hidden)next+=height+5;
@@ -514,7 +509,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         NSDictionary *result=(!error && [(NSHTTPURLResponse *)response statusCode]==200 && [object isKindOfClass:NSDictionary.class] && [object[@"retcode"] isEqual:@0])?object:nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             if(status) self.fetching=NO; else self.saving=NO;
-            if(result){ self.service=result;self.lastResponse=NSDate.date; }
+            if(result){ self.service=result;self.lastResponse=NSDate.date;[self refreshStatusMenu]; }
             completion(result);
         });
     }] resume];
@@ -595,20 +590,30 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         [self dismissViewControllerAnimated:YES completion:run];
     else if(!self.presentedViewController)run();
 }
+- (NSString *)statusMenuText {
+    BOOL healthy=self.lastResponse&&-self.lastResponse.timeIntervalSinceNow<20&&[self.service[@"ready"] boolValue];
+    NSInteger elapsed=MAX(0,(NSInteger)-self.began.timeIntervalSinceNow);
+    NSString *state=healthy?@"本机已就绪":self.readyAt?@"等待本机响应…":[NSString stringWithFormat:@"本机加载中 · %ld:%02ld",(long)elapsed/60,(long)elapsed%60];
+    if(healthy&&[self.service[@"busy"] boolValue])state=@"保存中…";
+    else if(healthy&&[self.service[@"lastError"] length])state=@"保存未完成";
+    return [NSString stringWithFormat:@"%@\n最近保存：%@\n签名到期：%@",state,[self localDate:self.service[@"fullSaveAt"]],self.statusMenuExpiry?:[self expiry]];
+}
+- (void)refreshStatusMenu {
+    if(!self.statusMenu)return;
+    NSString *text=[self statusMenuText];
+    if(![self.statusMenu.message isEqualToString:text])self.statusMenu.message=text;
+}
 - (void)showStatus {
     if(self.presentedViewController) return;
-    BOOL healthy=self.lastResponse&&-self.lastResponse.timeIntervalSinceNow<20&&[self.service[@"ready"] boolValue];
-    NSInteger elapsed=(NSInteger)-self.began.timeIntervalSinceNow;
-    NSString *state=healthy?@"本机服务已就绪":self.readyAt?@"正在等待本机服务响应":[NSString stringWithFormat:@"准备世界 · %ld:%02ld",(long)elapsed/60,(long)elapsed%60];
-    if([self.service[@"busy"] boolValue])state=@"正在保存，完成后会更新保存时间";
-    else if([self.service[@"lastError"] length])state=@"上次保存尚未确认完成";
-    NSString *text=[NSString stringWithFormat:@"%@\n最近确认保存：%@\n签名到期：%@",state,[self localDate:self.service[@"fullSaveAt"]],[self expiry]];
-    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"本机游玩" message:text preferredStyle:UIAlertControllerStyleAlert];
+    self.statusMenuExpiry=[self expiry];
+    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"本机游玩" message:[self statusMenuText] preferredStyle:UIAlertControllerStyleAlert];
+    self.statusMenu=menu;
     [menu addAction:[UIAlertAction actionWithTitle:@"木桩训练场" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:0];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"保存进度" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:1];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"备份并导出" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:2];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"使用手册与命令" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:3];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"继续游戏" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:menu animated:YES completion:nil];
+    if(!self.fetching)[self request:@"status" completion:^(NSDictionary *result){}];
 }
 @end

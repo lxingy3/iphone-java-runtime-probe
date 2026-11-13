@@ -136,15 +136,42 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
     }
     id controller=((id(*)(id,SEL))objc_msgSend)(NSClassFromString(@"RPSPlaySupport"),sel_registerName("shared"));
     ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("start:"),storage);
+    NSMutableDictionary *checks=[NSMutableDictionary new];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,4*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
+        NSDictionary *originalService=[controller valueForKey:@"service"];
+        NSDate *originalBegan=[controller valueForKey:@"began"];
+        [controller setValue:@YES forKey:@"fetching"];
+        [controller setValue:nil forKey:@"readyAt"];[controller setValue:nil forKey:@"lastResponse"];
+        [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-155] forKey:@"began"];
+        [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-150] forKey:@"statusChangedAt"];
+        [controller setValue:@{@"ready":@NO} forKey:@"service"];
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        UILabel *notice=[controller valueForKey:@"message"];
+        checks[@"loading_notice_stays_visible_after_150_seconds"]=@(!notice.hidden&&notice.alpha==1&&[notice.text hasPrefix:@"本机加载中"]);
+        [controller setValue:@{@"ready":@YES} forKey:@"service"];[controller setValue:NSDate.date forKey:@"lastResponse"];
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        checks[@"ready_notice_before_fading"]=@(!notice.hidden&&[notice.text isEqual:@"本机已就绪"]);
+        [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-3] forKey:@"statusChangedAt"];
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,600*NSEC_PER_MSEC),dispatch_get_main_queue(), ^{
+            checks[@"ready_notice_completes_fade_and_passes_touches"]=@(notice.hidden&&notice.alpha==0&&!notice.userInteractionEnabled);
+            [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-25] forKey:@"lastResponse"];
+            ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+            checks[@"lost_response_restores_persistent_notice"]=@(!notice.hidden&&notice.alpha==1&&[notice.text containsString:@"等待本机响应"]);
+            [controller setValue:originalBegan forKey:@"began"];[controller setValue:originalService forKey:@"service"];
+            [controller setValue:NSDate.date forKey:@"lastResponse"];[controller setValue:@NO forKey:@"fetching"];
+            ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        });
+    });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,9*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
-        NSMutableDictionary *checks=[NSMutableDictionary new];
         UIWindow *overlay=[controller valueForKey:@"overlay"];
         UIButton *button=[controller valueForKey:@"button"];
         NSDictionary *service=[controller valueForKey:@"service"];
         checks[@"authenticated_loopback_ready"]=@([service[@"ready"] boolValue]);
         checks[@"overlay_does_not_take_key_window"]=@(gameWindow.isKeyWindow && !overlay.isKeyWindow);
         checks[@"readiness_accessible_without_persistent_text"]=@(!button.currentTitle.length&&[button.accessibilityValue isEqualToString:@"本机 · 就绪"]);
-        checks[@"edge_handle_has_pull_gesture"]=@(button.gestureRecognizers.count>0);
+        UIImageView *symbol=[button valueForKey:@"symbol"];
+        checks[@"small_minimap_icon_without_sidebar"]=@(symbol!=nil&&button.subviews.count==1&&button.gestureRecognizers.count==0);
         [controller setValue:NSDate.date forKey:@"lastResponse"];
         [controller setValue:@{@"ready":@YES,@"dps":@{@"active":@YES,@"remainingSeconds":@42,@"hitCount":@180,@"totalDamage":@12345678,@"averageDps":@685871}} forKey:@"service"];
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
@@ -170,17 +197,17 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         checks[@"leaving_station_hides_interaction_immediately"]=@(interaction.hidden);
         [controller setValue:@{@"ready":@YES,@"dps":lab} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         UIView *root=[controller view];CGRect original=root.frame;
-        NSMutableArray *layouts=[NSMutableArray new];BOOL within=YES,edgeAnchored=YES;
+        NSMutableArray *layouts=[NSMutableArray new];BOOL within=YES,minimapAnchored=YES;
         CGSize sizes[]={{375,812},{812,375},{768,1024},{1024,768}};
         for(int i=0;i<4;i++){
             root.frame=(CGRect){CGPointZero,sizes[i]};[root setNeedsLayout];[root layoutIfNeeded];
             BOOL fit=CGRectContainsRect(root.bounds,button.frame)&&CGRectContainsRect(root.bounds,interaction.frame)&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingChart"] frame])&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingPanel"] frame]);within &= fit;
-            edgeAnchored &= button.frame.size.width<=44&&button.frame.size.height<=64&&CGRectGetMaxX(button.frame)<=root.safeAreaInsets.left+45;
+            minimapAnchored &= button.frame.size.width==44&&button.frame.size.height==44&&CGRectGetMinX(button.frame)>root.safeAreaInsets.left+30&&CGRectGetMinY(button.frame)<=root.safeAreaInsets.top+12;
             [layouts addObject:@{@"width":@(sizes[i].width),@"height":@(sizes[i].height),@"buttonFits":@(fit)}];
         }
         root.frame=original;[root setNeedsLayout];[root layoutIfNeeded];
         checks[@"compact_and_expanded_layouts"]=@(within);
-        checks[@"launcher_remains_on_left_edge"]=@(edgeAnchored);
+        checks[@"launcher_beside_minimap_in_all_sizes"]=@(minimapAnchored);
         Class adaptive=NSClassFromString(@"RPSAdaptiveView");SEL regionSelector=sel_registerName("regionsForBounds:divisions:occlusions:");
         BOOL regionsFit=adaptive!=nil;
         CGRect screen=CGRectMake(0,0,1000,700),folds[]={CGRectMake(490,0,20,700),CGRectMake(0,340,1000,20)};
@@ -198,11 +225,21 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         checks[@"status_button_receives_touch"]=@(hit==button || [hit isDescendantOfView:button]);
         UIGraphicsImageRenderer *entryRenderer=[[UIGraphicsImageRenderer alloc] initWithSize:overlay.bounds.size];
         NSData *entryPNG=[entryRenderer PNGDataWithActions:^(UIGraphicsImageRendererContext *ctx){[overlay drawViewHierarchyInRect:overlay.bounds afterScreenUpdates:YES];}];
-        [entryPNG writeToFile:[documents stringByAppendingPathComponent:@"play-support-edge-handle.png"] atomically:YES];
+        [entryPNG writeToFile:[documents stringByAppendingPathComponent:@"play-support-minimap-icon.png"] atomically:YES];
         [button sendActionsForControlEvents:UIControlEventTouchUpInside];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(), ^{
             UIAlertController *menu=(UIAlertController *)[controller presentedViewController];
             checks[@"menu_actions"]=@([menu isKindOfClass:UIAlertController.class] && menu.actions.count==5 && [menu.actions.firstObject.title isEqual:@"木桩训练场"]);
+            NSDictionary *priorService=[controller valueForKey:@"service"];
+            [controller setValue:@YES forKey:@"fetching"];
+            [controller setValue:@{@"ready":@YES,@"busy":@YES} forKey:@"service"];
+            ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+            BOOL showedSaving=[menu.message containsString:@"保存中"];
+            [controller setValue:@{@"ready":@YES,@"fullSaveAt":@"2026-11-13T19:00:00Z"} forKey:@"service"];
+            ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+            checks[@"open_status_menu_refreshes_without_reopening"]=@(showedSaving&&![menu.message containsString:@"保存中"]&&[menu.message containsString:@"本机已就绪"]&&[controller presentedViewController]==menu);
+            [controller setValue:priorService forKey:@"service"];[controller setValue:@NO forKey:@"fetching"];
+            ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
             UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:overlay.bounds.size];
             NSData *png=[renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *ctx){[overlay drawViewHierarchyInRect:overlay.bounds afterScreenUpdates:YES];}];
             [png writeToFile:[documents stringByAppendingPathComponent:@"play-support-menu.png"] atomically:YES];
