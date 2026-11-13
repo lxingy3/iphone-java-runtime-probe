@@ -287,7 +287,7 @@
 - (void)showStatus {
     if(self.presentedViewController) return;
     NSString *state=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<20?@"本机服务已响应":@"尚未就绪，请保持前台等待";
-    NSString *text=[NSString stringWithFormat:@"%@\n最近保存：%@\n签名到期：%@\n\n续签需要 SideStore；日常游玩无需另开服务端。",state,[self localDate:self.service[@"fullSaveAt"]],[self expiry]];
+    NSString *text=[NSString stringWithFormat:@"%@\n最近保存：%@\n签名到期：%@",state,[self localDate:self.service[@"fullSaveAt"]],[self expiry]];
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"本机游玩" message:text preferredStyle:UIAlertControllerStyleAlert];
     [menu addAction:[UIAlertAction actionWithTitle:@"木桩训练场" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:0];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"保存进度" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:1];}]];
