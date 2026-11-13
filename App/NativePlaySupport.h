@@ -1,20 +1,40 @@
 // Small host controls for a self-contained local runtime. No account credentials or external services.
 #import <WebKit/WebKit.h>
 
-@interface RPSBattlePanel : UIViewController <WKScriptMessageHandler,WKNavigationDelegate,WKURLSchemeHandler>
+@interface RPSLocalArtwork : NSObject <WKURLSchemeHandler>
+@property(nonatomic,copy) NSString *documents;
+@property(nonatomic,strong) NSMutableDictionary *diagnostics;
+@end
+@implementation RPSLocalArtwork
+- (void)webView:(WKWebView *)webView startURLSchemeTask:(id<WKURLSchemeTask>)task {
+    NSURL *url=task.request.URL;
+    if(![url.host isEqual:@"local"]||![@[@"/training-assets/courtyard.png",@"/training-assets/portraits.png"] containsObject:url.path]){
+        [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];return;
+    }
+    NSData *data=[NSData dataWithContentsOfFile:[self.documents stringByAppendingPathComponent:[url.path substringFromIndex:1]]];
+    if(!data){[task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];return;}
+    [task didReceiveResponse:[[NSURLResponse alloc] initWithURL:url MIMEType:@"image/png" expectedContentLength:data.length textEncodingName:nil]];
+    [task didReceiveData:data];[task didFinish];self.diagnostics[@"artworkLoaded"]=@YES;
+}
+- (void)webView:(WKWebView *)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task {}
+@end
+
+@interface RPSBattlePanel : UIViewController <WKScriptMessageHandler,WKNavigationDelegate>
 @property(nonatomic,strong) WKWebView *web;
 @property(nonatomic,copy) NSString *storage;
 @property(nonatomic,weak) UIWindow *previousKey;
 @property(nonatomic,strong) NSMutableDictionary *diagnostics;
 @property(nonatomic,strong) UIImageView *backdrop;
 @property(nonatomic,strong) NSMutableArray<UIVisualEffectView *> *glassViews;
+@property(nonatomic,copy) NSArray *lastGlassLayout;
 @property(nonatomic,strong) UIButton *exitButton;
 @end
 @implementation RPSBattlePanel
 - (void)loadView {
     self.diagnostics=[NSMutableDictionary new];
     WKWebViewConfiguration *config=[WKWebViewConfiguration new];
-    [config setURLSchemeHandler:self forURLScheme:@"training"];
+    RPSLocalArtwork *artwork=[RPSLocalArtwork new];artwork.documents=self.storage.stringByDeletingLastPathComponent;artwork.diagnostics=self.diagnostics;
+    [config setURLSchemeHandler:artwork forURLScheme:@"training"];
     [config.userContentController addScriptMessageHandler:self name:@"training"];
     self.view=[UIView new];self.view.backgroundColor=[UIColor colorWithRed:.48 green:.71 blue:.87 alpha:1];
     NSString *documents=self.storage.stringByDeletingLastPathComponent;
@@ -41,17 +61,6 @@
     if(html.length)[self.web loadHTMLString:html baseURL:[NSURL URLWithString:@"training://local/"]];
     else {self.diagnostics[@"loadError"]=@(error.code);UILabel *label=[UILabel new];label.text=@"训练场未就绪";label.textAlignment=NSTextAlignmentCenter;label.frame=CGRectMake(20,100,300,60);[self.view addSubview:label];}
 }
-- (void)webView:(WKWebView *)webView startURLSchemeTask:(id<WKURLSchemeTask>)task {
-    NSURL *url=task.request.URL;
-    if(![url.host isEqual:@"local"]||![@[@"/training-assets/courtyard.png",@"/training-assets/portraits.png"] containsObject:url.path]){
-        [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];return;
-    }
-    NSData *data=[NSData dataWithContentsOfFile:[self.storage.stringByDeletingLastPathComponent stringByAppendingPathComponent:[url.path substringFromIndex:1]]];
-    if(!data){[task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];return;}
-    [task didReceiveResponse:[[NSURLResponse alloc] initWithURL:url MIMEType:@"image/png" expectedContentLength:data.length textEncodingName:nil]];
-    [task didReceiveData:data];[task didFinish];self.diagnostics[@"artworkLoaded"]=@YES;
-}
-- (void)webView:(WKWebView *)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task {}
 - (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated];[self.navigationController setNavigationBarHidden:YES animated:NO]; }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];self.backdrop.frame=self.view.bounds;self.web.frame=self.view.bounds;
@@ -60,6 +69,7 @@
 }
 - (void)placeGlass:(NSArray *)rects {
     if(![rects isKindOfClass:NSArray.class]||rects.count>8)return;
+    if([self.lastGlassLayout isEqualToArray:rects])return;self.lastGlassLayout=[rects copy];
     for(UIVisualEffectView *glass in self.glassViews)[glass removeFromSuperview];[self.glassViews removeAllObjects];
     for(id value in rects){
         if(![value isKindOfClass:NSDictionary.class])continue;
