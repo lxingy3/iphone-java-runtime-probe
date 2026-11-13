@@ -157,6 +157,8 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         UIButton *interaction=[controller valueForKey:@"trainingInteraction"];
         checks[@"idle_dummy_proximity_interaction"]=@(!interaction.hidden&&[interaction.currentTitle isEqual:@"开始挑战"]);
         checks[@"lab_hud_max_hit_and_chart"]=@([dpsLabel.text containsString:@"98765"]&&![[controller valueForKey:@"trainingChart"] isHidden]&&![[controller valueForKey:@"trainingPanel"] isHidden]&&![[controller valueForKey:@"trainingDetails"] isHidden]);
+        [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-4] forKey:@"lastResponse"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        checks[@"lab_stale_statistics_visible"]=@([dpsLabel.text containsString:@"正在同步"]);[controller setValue:NSDate.date forKey:@"lastResponse"];
         [controller setValue:@{@"ready":@YES,@"dps":@{@"inArena":@YES,@"station":@{@"label":@"角色属性",@"section":@"party"}}} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         checks[@"room_station_proximity_action"]=@(!interaction.hidden&&[interaction.currentTitle isEqual:@"角色属性"]);
         [controller setValue:@{@"ready":@YES,@"dps":lab} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
@@ -170,6 +172,16 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         }
         root.frame=original;[root setNeedsLayout];[root layoutIfNeeded];
         checks[@"compact_and_expanded_layouts"]=@(within);
+        Class adaptive=NSClassFromString(@"RPSAdaptiveView");SEL regionSelector=sel_registerName("regionsForBounds:divisions:occlusions:");
+        BOOL regionsFit=adaptive!=nil;
+        CGRect screen=CGRectMake(0,0,1000,700),folds[]={CGRectMake(490,0,20,700),CGRectMake(0,340,1000,20)};
+        CGRect camera=CGRectMake(950,0,50,60);
+        for(int i=0;i<2&&adaptive;i++){
+            NSArray<NSValue *> *panes=((id(*)(id,SEL,CGRect,id,id))objc_msgSend)(adaptive,regionSelector,screen,@[[NSValue valueWithCGRect:folds[i]]],@[[NSValue valueWithCGRect:camera]]);
+            regionsFit &= panes.count==2;
+            for(NSValue *pane in panes)regionsFit &= CGRectContainsRect(screen,pane.CGRectValue)&&!CGRectIntersectsRect(pane.CGRectValue,folds[i])&&!CGRectIntersectsRect(pane.CGRectValue,camera);
+        }
+        checks[@"fold_and_camera_region_geometry"]=@(regionsFit);
         CGPoint blank=CGPointMake(CGRectGetWidth(overlay.bounds)*.85,CGRectGetMaxY(overlay.bounds)-50);
         checks[@"game_touches_pass_through"]=@([overlay hitTest:blank withEvent:nil]==nil);
         CGPoint center=[button convertPoint:CGPointMake(CGRectGetMidX(button.bounds),CGRectGetMidY(button.bounds)) toView:overlay];

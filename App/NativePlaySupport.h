@@ -2,6 +2,52 @@
 #import <WebKit/WebKit.h>
 #import <CoreText/CoreText.h>
 
+// UIKit reports these frames in this view's coordinates, including their margins.
+// Keep related controls together on one side of an active fold; never infer a
+// device pose from the interface orientation or from an iPhone/iPad idiom.
+static NSArray<NSValue *> *RPSRegions(CGRect bounds,NSArray<NSValue *> *divisions,NSArray<NSValue *> *occlusions) {
+    NSMutableArray<NSValue *> *panes=[NSMutableArray arrayWithObject:[NSValue valueWithCGRect:bounds]];
+    for(NSValue *value in divisions){
+        CGRect division=value.CGRectValue;NSMutableArray *next=[NSMutableArray new];
+        for(NSValue *piece in panes){CGRect r=piece.CGRectValue,d=CGRectIntersection(r,division);
+            if(CGRectIsNull(d)||CGRectIsEmpty(d)){[next addObject:piece];continue;}
+            CGRect a=r,b=r;
+            if(d.size.height>d.size.width){a.size.width=MAX(0,CGRectGetMinX(d)-r.origin.x);b.origin.x=CGRectGetMaxX(d);b.size.width=MAX(0,CGRectGetMaxX(r)-b.origin.x);}
+            else {a.size.height=MAX(0,CGRectGetMinY(d)-r.origin.y);b.origin.y=CGRectGetMaxY(d);b.size.height=MAX(0,CGRectGetMaxY(r)-b.origin.y);}
+            if(a.size.width>=44&&a.size.height>=44)[next addObject:[NSValue valueWithCGRect:a]];
+            if(b.size.width>=44&&b.size.height>=44)[next addObject:[NSValue valueWithCGRect:b]];
+        }if(next.count)panes=next;
+    }
+    for(NSValue *value in occlusions){
+        for(NSUInteger i=0;i<panes.count;i++){CGRect r=panes[i].CGRectValue,o=CGRectIntersection(r,value.CGRectValue);if(CGRectIsNull(o)||CGRectIsEmpty(o))continue;
+            CGRect choices[]={CGRectMake(r.origin.x,r.origin.y,r.size.width,MAX(0,o.origin.y-r.origin.y)),CGRectMake(r.origin.x,CGRectGetMaxY(o),r.size.width,MAX(0,CGRectGetMaxY(r)-CGRectGetMaxY(o))),CGRectMake(r.origin.x,r.origin.y,MAX(0,o.origin.x-r.origin.x),r.size.height),CGRectMake(CGRectGetMaxX(o),r.origin.y,MAX(0,CGRectGetMaxX(r)-CGRectGetMaxX(o)),r.size.height)};
+            CGRect best=CGRectZero;for(int c=0;c<4;c++)if(choices[c].size.width>=44&&choices[c].size.height>=44&&choices[c].size.width*choices[c].size.height>best.size.width*best.size.height)best=choices[c];
+            if(!CGRectIsEmpty(best))panes[i]=[NSValue valueWithCGRect:best];
+        }
+    }return panes;
+}
+
+@interface RPSAdaptiveView : UIView
++ (NSArray<NSValue *> *)regionsForBounds:(CGRect)bounds divisions:(NSArray *)divisions occlusions:(NSArray *)occlusions;
+- (NSArray<NSValue *> *)contentRegions;
+@end
+@implementation RPSAdaptiveView
++ (NSArray<NSValue *> *)regionsForBounds:(CGRect)bounds divisions:(NSArray *)divisions occlusions:(NSArray *)occlusions{return RPSRegions(bounds,divisions,occlusions);}
+- (NSArray<NSValue *> *)contentRegions {
+    NSMutableArray *divisions=[NSMutableArray new],*occlusions=[NSMutableArray new];
+    if(@available(iOS 27.1,*)){
+        for(UIViewReservedRegion *region in [self reservedRegionsOfKind:UIViewReservedRegionKind.divisionRegionKind])[divisions addObject:[NSValue valueWithCGRect:region.frame]];
+        for(UIViewReservedRegion *region in [self reservedRegionsOfKind:UIViewReservedRegionKind.occlusionRegionKind])[occlusions addObject:[NSValue valueWithCGRect:region.frame]];
+    }
+    return RPSRegions(UIEdgeInsetsInsetRect(self.bounds,self.safeAreaInsets),divisions,occlusions);
+}
+- (void)updateConstraints {
+    // Reading here lets UIKit invalidate this pass when a reserved region changes.
+    [self contentRegions];[self setNeedsLayout];[super updateConstraints];
+}
+- (void)safeAreaInsetsDidChange {[super safeAreaInsetsDidChange];[self setNeedsUpdateConstraints];}
+@end
+
 static UIFont *RPSTrainingFont(CGFloat size) {
     static NSString *name;static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -68,7 +114,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     RPSLocalArtwork *artwork=[RPSLocalArtwork new];artwork.documents=self.storage.stringByDeletingLastPathComponent;artwork.diagnostics=self.diagnostics;
     [config setURLSchemeHandler:artwork forURLScheme:@"training"];
     [config.userContentController addScriptMessageHandler:self name:@"training"];
-    self.view=[UIView new];self.view.backgroundColor=[UIColor colorWithRed:.48 green:.71 blue:.87 alpha:1];
+    self.view=[RPSAdaptiveView new];self.view.backgroundColor=[UIColor colorWithRed:.48 green:.71 blue:.87 alpha:1];
     NSString *documents=self.storage.stringByDeletingLastPathComponent;
     self.backdrop=[[UIImageView alloc] initWithImage:[UIImage imageWithContentsOfFile:[documents stringByAppendingPathComponent:@"training-assets/courtyard.png"]]];
     self.backdrop.contentMode=UIViewContentModeScaleAspectFill;self.backdrop.clipsToBounds=YES;
@@ -95,8 +141,11 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 }
 - (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated];[self.navigationController setNavigationBarHidden:YES animated:NO]; }
 - (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];self.backdrop.frame=self.view.bounds;self.web.frame=self.view.bounds;
-    UIEdgeInsets safe=self.view.safeAreaInsets;self.exitButton.frame=CGRectMake(self.view.bounds.size.width-MAX(16,safe.right)-44,MAX(10,safe.top),44,44);
+    [super viewDidLayoutSubviews];self.backdrop.frame=self.view.bounds;
+    NSArray<NSValue *> *regions=[(RPSAdaptiveView *)self.view contentRegions];CGRect controls=regions.lastObject.CGRectValue;
+    self.web.frame=controls;
+    self.exitButton.frame=CGRectMake(CGRectGetMaxX(controls)-54,controls.origin.y+10,44,44);
+    self.diagnostics[@"controlRegion"]=NSStringFromCGRect(controls);self.diagnostics[@"regionCount"]=@(regions.count);
     [self.web evaluateJavaScript:@"typeof glassLayout==='function'&&glassLayout()" completionHandler:nil];
 }
 - (void)viewDidAppear:(BOOL)animated {
@@ -202,16 +251,15 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 @implementation RPSPlaySupport
 + (instancetype)shared { static id value; static dispatch_once_t once; dispatch_once(&once, ^{ value=[self new]; }); return value; }
 - (void)loadView {
-    self.view=[UIView new]; self.view.backgroundColor=UIColor.clearColor;
+    self.view=[RPSAdaptiveView new]; self.view.backgroundColor=UIColor.clearColor;
     self.button=[UIButton buttonWithType:UIButtonTypeSystem];
-    self.button.translatesAutoresizingMaskIntoConstraints=NO;
     self.button.backgroundColor=[UIColor colorWithWhite:0.08 alpha:0.85];
     self.button.layer.cornerRadius=15; self.button.tintColor=UIColor.whiteColor;
     self.button.titleLabel.font=[UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     self.button.accessibilityIdentifier=@"local-play-status";
     [self.button addTarget:self action:@selector(showStatus) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.button];
-    self.message=[UILabel new]; self.message.translatesAutoresizingMaskIntoConstraints=NO;
+    self.message=[UILabel new];
     self.message.numberOfLines=0; self.message.textAlignment=NSTextAlignmentCenter;
     self.message.font=[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     self.message.adjustsFontForContentSizeCategory=YES;
@@ -226,17 +274,6 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.trainingInteraction.accessibilityIdentifier=@"training-interaction";self.trainingReport.accessibilityIdentifier=@"training-report";
     [self.trainingInteraction addTarget:self action:@selector(trainingInteract) forControlEvents:UIControlEventTouchUpInside];
     [self.trainingReport setTitle:@"战斗报告" forState:UIControlStateNormal];[self.trainingReport addTarget:self action:@selector(showTrainingReport) forControlEvents:UIControlEventTouchUpInside];
-    UILayoutGuide *safe=self.view.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[
-        [self.button.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],
-        [self.button.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
-        [self.button.widthAnchor constraintEqualToConstant:94], [self.button.heightAnchor constraintEqualToConstant:32],
-        [self.message.topAnchor constraintEqualToAnchor:self.button.bottomAnchor constant:5],
-        [self.message.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
-        [self.message.leadingAnchor constraintGreaterThanOrEqualToAnchor:safe.leadingAnchor constant:12],
-        [self.message.trailingAnchor constraintLessThanOrEqualToAnchor:safe.trailingAnchor constant:-12],
-        [self.message.widthAnchor constraintLessThanOrEqualToConstant:390]
-    ]];
 }
 - (void)start:(NSString *)storage {
     if(self.storage) return;
@@ -300,6 +337,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         self.message.hidden=NO;self.message.font=RPSTrainingFont(13);
         NSString *time=[dps[@"phase"] isEqual:@"countdown"]?[NSString stringWithFormat:@"准备 · %@",dps[@"countdown"]?:@3]:[NSString stringWithFormat:@"%.1f 秒",[dps[@"elapsedSeconds"] doubleValue]];
         self.message.text=[NSString stringWithFormat:@"  %@　DPS %.0f  \n  累计 %.0f　最高一击 %.0f  ",time,[dps[@"averageDps"] doubleValue],[dps[@"totalDamage"] doubleValue],[dps[@"maxHit"] doubleValue]];
+        if(-self.lastResponse.timeIntervalSinceNow>3 || [self.service[@"statisticsPending"] boolValue])self.message.text=@"  战斗统计正在同步…  ";
     }
     [self updateTrainingHUD:healthy?dps:nil];
     NSDictionary *finished=[self.service[@"lastTrainingResult"] isKindOfClass:NSDictionary.class]?self.service[@"lastTrainingResult"]:nil;
@@ -317,14 +355,17 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     if((++self.ticks%10==0 || testing || lab || [dps[@"inArena"] boolValue]) && !self.fetching) [self request:@"status" completion:^(NSDictionary *result){}];
 }
 - (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];CGRect area=UIEdgeInsetsInsetRect(self.view.bounds,self.view.safeAreaInsets);BOOL wide=area.size.width>area.size.height;
-    CGFloat offset=wide?80:118,width=MIN(wide?220:170,area.size.width*.40),left=area.origin.x+10,top=area.origin.y+offset;
-    CGFloat height=MIN(90,MAX(60,(area.size.height-offset-22)/3)),next=top;
+    [super viewDidLayoutSubviews];NSArray<NSValue *> *regions=[(RPSAdaptiveView *)self.view contentRegions];CGRect area=regions.firstObject.CGRectValue,controls=regions.lastObject.CGRectValue;
+    self.button.frame=CGRectMake(CGRectGetMidX(area)-47,area.origin.y+6,94,32);
+    CGFloat messageWidth=MIN(390,MAX(44,area.size.width-24));CGSize messageSize=[self.message sizeThatFits:CGSizeMake(messageWidth,CGFLOAT_MAX)];
+    self.message.frame=CGRectMake(CGRectGetMidX(area)-messageWidth/2,CGRectGetMaxY(self.button.frame)+5,messageWidth,MIN(90,messageSize.height));
+    CGFloat offset=MAX(80,CGRectGetMaxY(self.message.frame)-area.origin.y+8),width=MIN(220,area.size.width*.45),left=area.origin.x+10,top=area.origin.y+offset;
+    CGFloat height=MIN(90,MAX(34,(area.size.height-offset-22)/3)),next=top;
     self.trainingDetails.frame=CGRectMake(left,next,width,height);if(!self.trainingDetails.hidden)next+=height+5;
     self.trainingChart.frame=CGRectMake(left,next,width,height);if(!self.trainingChart.hidden)next+=height+5;
     self.trainingPanel.frame=CGRectMake(left,next,width,height);self.trainingPanel.font=RPSTrainingFont(height<80?10:11);self.trainingDetails.font=RPSTrainingFont(height<80?10:11);
-    self.trainingInteraction.frame=CGRectMake(area.origin.x+area.size.width*.55,area.origin.y+area.size.height*.46,MIN(160,area.size.width*.40),44);
-    self.trainingReport.frame=CGRectMake(area.origin.x+area.size.width*.40,CGRectGetMaxY(area)-56,120,44);
+    self.trainingInteraction.frame=CGRectMake(controls.origin.x+controls.size.width*.55,controls.origin.y+controls.size.height*.46,MIN(160,controls.size.width*.40),44);
+    self.trainingReport.frame=CGRectMake(CGRectGetMidX(controls)-60,CGRectGetMaxY(controls)-56,120,44);
 }
 - (void)updateTrainingHUD:(NSDictionary *)dps {
     NSDictionary *config=dps[@"config"];BOOL exists=[dps[@"mode"] isEqual:@"lab"];
