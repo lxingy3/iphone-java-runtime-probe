@@ -791,7 +791,7 @@ cp App/battle-training.html "$fixture/battle-training.html"
 cp "$kit/RuntimeHost.dylib" "$kit/RuntimeClientProbe.dylib" "$fixture/Frameworks/"
 xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
   -fobjc-arc -fmodules -O2 -DRP_CLIENT_FIXTURE=1 App/main.m \
-  "$kit/RuntimeClientProbe.dylib" "$kit/RuntimeHost.dylib" -framework UIKit -framework Foundation \
+  "$kit/RuntimeClientProbe.dylib" "$kit/RuntimeHost.dylib" -framework UIKit -framework Foundation -framework WebKit \
   -Wl,-headerpad_max_install_names -o "$fixture/ObserverFixture"
 # The executable directly calls the host API; unlike the observer dylib, its
 # loader directory is the app root, not Frameworks. Keep the production dylib
