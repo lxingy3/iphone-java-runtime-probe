@@ -790,6 +790,27 @@ xcodegen generate --spec project.yml
 xcodebuild -project RuntimeProbe.xcodeproj -scheme RuntimeProbe -configuration Release \
   -destination "$build_destination" -derivedDataPath build/DerivedData ARCHS=arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 if [[ "$sdk_name" == iphonesimulator ]]; then
+# Isolate the linked-SDK compatibility gate using the same scene/fullscreen/
+# landscape contract as the game. Only the SDK load-command field differs.
+mkdir -p build/DuoGeometryLegacy.app build/DuoGeometryModern.app
+xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" -fobjc-arc -fmodules App/DuoGeometryFixture.m -framework UIKit -framework Foundation -o build/DuoGeometryModern.app/DuoGeometry
+python3 - <<'PY'
+import pathlib,plistlib,struct
+base=pathlib.Path('build/DuoGeometryModern.app/DuoGeometry').read_bytes()
+for label,sdk in [('Legacy',0x1a0200),('Modern',0x1b0100)]:
+    data=bytearray(base);assert struct.unpack_from('<I',data)[0]==0xfeedfacf
+    offset=32;found=0
+    for _ in range(struct.unpack_from('<I',data,16)[0]):
+        command,size=struct.unpack_from('<II',data,offset)
+        if command==0x32:struct.pack_into('<I',data,offset+16,sdk);found+=1
+        offset+=size
+    assert found==1
+    root=pathlib.Path('build/DuoGeometry'+label+'.app');(root/'DuoGeometry').write_bytes(data)
+    info={'CFBundleExecutable':'DuoGeometry','CFBundleIdentifier':'local.astaps.DuoGeometry'+label,'CFBundleName':'DuoGeometry'+label,'CFBundlePackageType':'APPL','CFBundleShortVersionString':'1','CFBundleVersion':'1','MinimumOSVersion':'18.5','UIDeviceFamily':[1,2],'LSRequiresIPhoneOS':True,'UIRequiresFullScreen':True,'UIStatusBarHidden':True,'UISupportedInterfaceOrientations':['UIInterfaceOrientationLandscapeRight','UIInterfaceOrientationLandscapeLeft'],'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False,'UISceneConfigurations':{'UIWindowSceneSessionRoleApplication':[{'UISceneClassName':'UIWindowScene','UISceneConfigurationName':'Geometry','UISceneDelegateClassName':'DuoGeometryScene'}]}}}
+    (root/'Info.plist').write_bytes(plistlib.dumps(info))
+PY
+codesign --force --sign - build/DuoGeometryLegacy.app
+codesign --force --sign - build/DuoGeometryModern.app
 # Exercise the actual dynamic libraries in a small independent UIKit host. The
 # negative bundle checks that an unexpected host cannot activate instrumentation.
 fixture="$project_root/build/ObserverFixture.app"
@@ -934,7 +955,7 @@ class RoutingMock(http.server.BaseHTTPRequestHandler):
         size=int(self.headers.get('Content-Length','0'))
         body=self.rfile.read(size) if 0<=size<=4096 else b''
         if self.path=='/local/manage/training-action':
-            value=json.loads(body);passed=self.headers.get('X-Local-Maintenance')=='FIXTURE_MAINTENANCE' and value=={'action':'labPrepare','args':{'preset':'custom','seconds':120,'targets':1,'level':100,'energy':-1,'heal':True,'defense':100,'resistances':dict.fromkeys(['physical','fire','water','ice','electric','grass','wind','rock'],10),'immunities':[],'aura':'none','chart':False,'panel':False,'resistanceHud':False}}
+            value=json.loads(body);passed=self.headers.get('X-Local-Maintenance')=='FIXTURE_MAINTENANCE' and value=={'action':'labPrepare','args':{'preset':'custom','seconds':120,'level':100,'energy':-1,'heal':True,'defense':100,'resistances':dict.fromkeys(['physical','fire','water','ice','electric','grass','wind','rock'],10),'immunities':[],'aura':'none','chart':False,'panel':False,'resistanceHud':False}}
             (output/'training-action.json').write_text(json.dumps({'passed':passed,'action':value},indent=2))
             data=json.dumps({'retcode':0 if passed else -1,'online':True,'ready':True,'message':'木桩已就位','dps':{'mode':'lab','phase':'ready','prepared':True,'active':False,'canStart':True,'remainingSeconds':120}}).encode()
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
@@ -949,6 +970,24 @@ threading.Thread(target=mock.serve_forever,daemon=True).start()
 try:
     if device['state']!='Booted': command('xcrun','simctl','boot',udid)
     command('xcrun','simctl','bootstatus',udid,'-b',timeout=240)
+    geometry={}
+    for label in ['Legacy','Modern']:
+        bundle='local.astaps.DuoGeometry'+label
+        command('xcrun','simctl','install',udid,'build/DuoGeometry'+label+'.app')
+        container_path=pathlib.Path(command('xcrun','simctl','get_app_container',udid,bundle,'data').stdout.strip())
+        evidence=container_path/'Documents/duo-geometry.json'
+        if evidence.exists():evidence.unlink()
+        launched=command('xcrun','simctl','launch',udid,bundle)
+        for _ in range(15):
+            if evidence.exists():break
+            time.sleep(1)
+        geometry[label]=json.loads(evidence.read_text())
+        command('xcrun','simctl','io',udid,'screenshot',str(output/('duo-sdk-'+label+'.png')),check=False,timeout=30)
+        command('xcrun','simctl','terminate',udid,bundle,check=False,timeout=15)
+    geometry['modernWindowFillsDisplay']=geometry['Modern']['windowAreaFraction']>.97
+    geometry['compatibilityGateObserved']=geometry['Modern']['windowAreaFraction']>geometry['Legacy']['windowAreaFraction']+.01
+    geometry['actualGameTested']=False
+    (output/'duo-sdk-compatibility.json').write_text(json.dumps(geometry,indent=2))
     for variant,arguments in [('ObserverFixture',[]),('ObserverFixtureWrong',['--expect-observer-disabled']),('ObserverFixtureEmbedded',['--probe-embedded-runtime']),('ObserverFixtureRouting',['--expect-local-routing'])]:
         bundle={'ObserverFixtureEmbedded':'local.astaps.ObserverFixture.Embedded','ObserverFixtureRouting':'local.astaps.ObserverFixture.Routing'}.get(variant,'local.astaps.'+variant)
         command('xcrun','simctl','install',udid,'build/'+variant+'.app')
@@ -989,8 +1028,8 @@ try:
             (output/'play-support-fixture.json').write_text(json.dumps(support,indent=2))
             support_png=fixture_container/'Documents/play-support-menu.png'
             if support_png.is_file(): shutil.copy2(support_png,output/'play-support-menu.png')
-            entry_png=fixture_container/'Documents/play-support-edge-handle.png'
-            if entry_png.is_file(): shutil.copy2(entry_png,output/'play-support-edge-handle.png')
+            entry_png=fixture_container/'Documents/play-support-minimap-icon.png'
+            if entry_png.is_file(): shutil.copy2(entry_png,output/'play-support-minimap-icon.png')
             training_png=fixture_container/'Documents/training-panel.png'
             if training_png.is_file():shutil.copy2(training_png,output/'training-panel.png')
             action_report=output/'training-action.json'
