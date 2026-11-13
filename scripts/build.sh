@@ -988,6 +988,8 @@ try:
             (output/'play-support-fixture.json').write_text(json.dumps(support,indent=2))
             support_png=fixture_container/'Documents/play-support-menu.png'
             if support_png.is_file(): shutil.copy2(support_png,output/'play-support-menu.png')
+            entry_png=fixture_container/'Documents/play-support-edge-handle.png'
+            if entry_png.is_file(): shutil.copy2(entry_png,output/'play-support-edge-handle.png')
             training_png=fixture_container/'Documents/training-panel.png'
             if training_png.is_file():shutil.copy2(training_png,output/'training-panel.png')
             action_report=output/'training-action.json'
