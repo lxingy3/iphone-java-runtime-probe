@@ -8,6 +8,7 @@ targets:
     deploymentTarget: '18.5'
     sources:
       - path: App
+        excludes: [DuoGeometryFixture.m]
       - path: build/runtime
         type: folder
         buildPhase: resources
