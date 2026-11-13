@@ -13,6 +13,7 @@ static int RPDirectoriesMatch(const char *left, const char *right) {
 // Simulator-only host for the optional observer. No game code or real account data.
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <WebKit/WebKit.h>
 #import <objc/message.h>
 #include <unistd.h>
 #include <dlfcn.h>
@@ -157,16 +158,16 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         checks[@"status_button_receives_touch"]=@(hit==button || [hit isDescendantOfView:button]);
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("showStatus"));
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(), ^{
-            UIAlertController *menu=[controller presentedViewController];
+            UIAlertController *menu=(UIAlertController *)[controller presentedViewController];
             checks[@"menu_actions"]=@([menu isKindOfClass:UIAlertController.class] && menu.actions.count==5 && [menu.actions.firstObject.title isEqual:@"木桩训练场"]);
             UIGraphicsImageRenderer *renderer=[[UIGraphicsImageRenderer alloc] initWithSize:overlay.bounds.size];
             NSData *png=[renderer PNGDataWithActions:^(UIGraphicsImageRendererContext *ctx){[overlay drawViewHierarchyInRect:overlay.bounds afterScreenUpdates:YES];}];
             [png writeToFile:[documents stringByAppendingPathComponent:@"play-support-menu.png"] atomically:YES];
-            [controller dismissViewControllerAnimated:NO completion:^{
-                checks[@"menu_dismisses"]=@([controller presentedViewController]==nil);
-                ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("showTraining"));
+            ((void(*)(id,SEL,NSInteger))objc_msgSend)(controller,sel_registerName("performMenuAction:"),0);
+            {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW,4*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
-                    UINavigationController *nav=[controller presentedViewController];
+                    UINavigationController *nav=(UINavigationController *)[controller presentedViewController];
+                    checks[@"menu_dismisses"]=@([nav isKindOfClass:UINavigationController.class]);
                     UIViewController *panel=nav.topViewController;WKWebView *web=[panel valueForKey:@"web"];
                     checks[@"training_takes_keyboard_focus"]=@(overlay.isKeyWindow);
                     [web evaluateJavaScript:@"JSON.stringify({ready:document.getElementById('health').textContent,start:document.getElementById('start').disabled,bosses:document.querySelectorAll('.boss').length,overflow:document.documentElement.scrollWidth>window.innerWidth})" completionHandler:^(id value,NSError *error){
@@ -183,7 +184,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
                         });
                     }];
                 });
-            }];
+            }
         });
     });
 }

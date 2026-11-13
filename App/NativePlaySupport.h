@@ -254,15 +254,29 @@
     navigation.modalPresentationStyle=UIModalPresentationFullScreen;
     [self presentViewController:navigation animated:YES completion:nil];
 }
+- (void)performMenuAction:(NSInteger)choice {
+    void (^run)(void)=^{
+        switch(choice){
+            case 0: [self showTraining];break;
+            case 1: [self save:NO];break;
+            case 2: [self save:YES];break;
+            case 3: [self guide];break;
+        }
+    };
+    // Present only after the alert is gone, so UIKit never drops the next panel.
+    if([self.presentedViewController isKindOfClass:UIAlertController.class])
+        [self dismissViewControllerAnimated:YES completion:run];
+    else if(!self.presentedViewController)run();
+}
 - (void)showStatus {
     if(self.presentedViewController) return;
     NSString *state=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<20?@"本机服务已响应":@"尚未就绪，请保持前台等待";
     NSString *text=[NSString stringWithFormat:@"%@\n最近保存：%@\n签名到期：%@\n\n续签需要 SideStore；日常游玩无需另开服务端。",state,[self localDate:self.service[@"fullSaveAt"]],[self expiry]];
     UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"本机游玩" message:text preferredStyle:UIAlertControllerStyleAlert];
-    [menu addAction:[UIAlertAction actionWithTitle:@"木桩训练场" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self showTraining];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"保存进度" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self save:NO];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"备份并导出" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self save:YES];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"使用手册与命令" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self guide];}]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"木桩训练场" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:0];}]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"保存进度" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:1];}]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"备份并导出" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:2];}]];
+    [menu addAction:[UIAlertAction actionWithTitle:@"使用手册与命令" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:3];}]];
     [menu addAction:[UIAlertAction actionWithTitle:@"继续游戏" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:menu animated:YES completion:nil];
 }
