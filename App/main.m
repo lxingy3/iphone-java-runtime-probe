@@ -143,10 +143,15 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         checks[@"authenticated_loopback_ready"]=@([service[@"ready"] boolValue]);
         checks[@"overlay_does_not_take_key_window"]=@(gameWindow.isKeyWindow && !overlay.isKeyWindow);
         checks[@"readiness_label"]=@([button.currentTitle isEqualToString:@"本机 · 就绪"]);
+        [controller setValue:NSDate.date forKey:@"lastResponse"];
         [controller setValue:@{@"ready":@YES,@"dps":@{@"active":@YES,@"remainingSeconds":@42,@"hitCount":@180,@"totalDamage":@12345678,@"averageDps":@685871}} forKey:@"service"];
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         UILabel *dpsLabel=[controller valueForKey:@"message"];
         checks[@"live_dps_label"]=@(!dpsLabel.hidden && [dpsLabel.text containsString:@"42 秒"] && [dpsLabel.text containsString:@"180 次命中"]);
+        [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-4] forKey:@"lastResponse"];
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        checks[@"stale_statistics_not_presented_as_live"]=@([dpsLabel.text containsString:@"正在同步"]);
+        [controller setValue:NSDate.date forKey:@"lastResponse"];
         NSDictionary *lab=@{@"mode":@"lab",@"phase":@"ready",@"active":@NO,@"canStart":@YES,@"elapsedSeconds":@0,@"totalDamage":@123456,@"averageDps":@12345,@"maxHit":@98765,@"config":@{@"level":@105,@"defense":@100,@"chart":@YES,@"resistanceHud":@YES,@"resistances":@{@"fire":@70}},@"curve":@[@{@"seconds":@0,@"dps":@0},@{@"seconds":@1,@"dps":@4000}],@"activePanel":@{@"name":@"测试角色",@"hp":@22000,@"attack":@1500,@"defense":@800,@"mastery":@270,@"crit":@75,@"critDamage":@180,@"recharge":@140}};
         [controller setValue:@{@"ready":@YES,@"dps":lab} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         UIButton *interaction=[controller valueForKey:@"trainingInteraction"];
