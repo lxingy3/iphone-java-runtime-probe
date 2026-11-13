@@ -442,11 +442,17 @@ for command_name in xcodebuild xcrun xcodegen git python3 javac jar gmake autoco
 done
 if [[ -n "${PROBE_RUNTIME_ARCHIVE:-}" ]]; then
 python3 - <<'PY'
-import hashlib,json,os,pathlib,zipfile
+import hashlib,json,os,pathlib,plistlib,zipfile
 archive=pathlib.Path(os.environ['PROBE_RUNTIME_ARCHIVE'])
 expected=os.environ['PROBE_RUNTIME_SHA256']
 assert hashlib.sha256(archive.read_bytes()).hexdigest()==expected, 'Runtime archive checksum mismatch'
 with zipfile.ZipFile(archive) as z:
+    required_patch='Implement Apple ARM64 Zero signal-context PC accessors'
+    assert required_patch in z.read('runtime/LOCAL-PATCHES.txt').decode(), 'Runtime lacks the required signal-context fix; rebuild or select a corrected archive'
+    target_simulator=os.environ.get('PROBE_SDK','iphoneos')=='iphonesimulator'
+    framework=plistlib.loads(z.read('OpenJDK.xcframework/Info.plist'))
+    matching=[x for x in framework['AvailableLibraries'] if x.get('SupportedPlatform')=='ios' and (x.get('SupportedPlatformVariant')=='simulator')==target_simulator and 'arm64' in x.get('SupportedArchitectures',[])]
+    assert matching, 'Runtime archive does not match the selected device/simulator target'
     for entry in z.infolist():
         p=pathlib.PurePosixPath(entry.filename)
         if p.parts[0] not in {'OpenJDK.xcframework','runtime','module-check.json'}: continue
@@ -454,6 +460,7 @@ with zipfile.ZipFile(archive) as z:
         z.extract(entry,'build')
 report=json.loads(pathlib.Path('build/module-check.json').read_text())
 assert not report['missing'] and len(report['modules'])==18
+pathlib.Path('build/runtime-reuse-check.json').write_text(json.dumps({'sha256':expected,'sdk':os.environ.get('PROBE_SDK','iphoneos'),'signalContextPatchPresent':True,'targetMatched':True},indent=2))
 print('Reused checksum-verified runtime archive:', expected)
 PY
 else
@@ -889,13 +896,13 @@ def runtime_version(device):
     if not match: raise ValueError('Unrecognized simulator runtime identifier')
     return tuple(map(int,match.group(1).split('-')))
 candidates.sort(key=runtime_version,reverse=True)
-if profile=='standard':
-    # Use the newest ordinary-phone runtime supported by this Xcode.
-    # The runner's 27.1 image is Duo-only; its ordinary phones have 27.0/27.2.
-    # The newer 27.2 installer stalled before any fixture executed.
-    compatible=[d for d in candidates if runtime_version(d)<=(27,1)]
-    if not compatible: raise SystemExit('Missing Xcode-compatible standard simulator')
-    candidates=compatible
+# Both Duo and ordinary-phone 27.2 runtimes have stalled before fixtures run
+# under Xcode 27.1. Select a runtime no newer than this build's actual SDK.
+sdk_version=tuple(map(int,json.loads(pathlib.Path('build/toolchain.json').read_text())['sdk'].split('.')))
+normalize_version=lambda value:(value+(0,0,0))[:3]
+compatible=[d for d in candidates if normalize_version(runtime_version(d))<=normalize_version(sdk_version)]
+if not compatible: raise SystemExit('Missing SDK-compatible simulator for profile '+profile)
+candidates=compatible
 device=candidates[0]
 # Pre-provisioned CI devices can report Booted while installd never responds.
 # Create an isolated device with the same observed type/runtime; do not erase
@@ -905,7 +912,7 @@ device_type=next(t['identifier'] for t in types if t['name']==device['name'])
 udid=command('xcrun','simctl','create','RuntimeProbe-'+str(os.getpid()),device_type,device['runtime']).stdout.strip()
 assert re.fullmatch(r'[0-9A-Fa-f-]{36}',udid), 'Unexpected new simulator identifier'
 device=dict(device,udid=udid,state='Shutdown')
-(output/'device.json').write_text(json.dumps({'name':device['name'],'runtime':device['runtime'],'profile':profile,'environment':'simulator','freshDevice':True,'deviceType':device_type},indent=2))
+(output/'device.json').write_text(json.dumps({'name':device['name'],'runtime':device['runtime'],'profile':profile,'environment':'simulator','freshDevice':True,'deviceType':device_type,'sdk':'.'.join(map(str,sdk_version))},indent=2))
 command('xcrun','simctl','help',check=False)
 command('xcrun','simctl','io',udid,'help',check=False)
 container=None
@@ -1070,7 +1077,8 @@ finally:
         log('Screenshot unavailable: '+repr(failure))
 result['environment']='iOS Simulator, not a physical iPhone'
 result['simulator_device']=device['name']
-result['duo_device_tested']=device['name']=='iPhone Duo'
+result['duo_device_selected']=device['name']=='iPhone Duo'
+result['duo_device_tested']=device['name']=='iPhone Duo' and bool(observer_results)
 result['observer_fixtures']=observer_results
 (output/'acceptance.json').write_text(json.dumps(result,indent=2))
 print(json.dumps(result,indent=2))
