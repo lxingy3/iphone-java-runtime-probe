@@ -787,6 +787,7 @@ if [[ "$sdk_name" == iphonesimulator ]]; then
 # negative bundle checks that an unexpected host cannot activate instrumentation.
 fixture="$project_root/build/ObserverFixture.app"
 mkdir -p "$fixture/Frameworks"
+cp App/battle-training.html "$fixture/battle-training.html"
 cp "$kit/RuntimeHost.dylib" "$kit/RuntimeClientProbe.dylib" "$fixture/Frameworks/"
 xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" \
   -fobjc-arc -fmodules -O2 -DRP_CLIENT_FIXTURE=1 App/main.m \
@@ -898,13 +899,20 @@ result={'passed':False,'error':'No report before timeout'}
 class RoutingMock(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args): pass
     def do_GET(self):
-        passed=self.path=='/local/manage/status' and self.headers.get('X-Local-Maintenance')=='FIXTURE_MAINTENANCE'
-        data=json.dumps({'retcode':0,'ready':passed,'fullSaveAt':'2026-11-12T12:00:00Z'}).encode()
+        passed=self.path in ['/local/manage/status','/local/manage/training'] and self.headers.get('X-Local-Maintenance')=='FIXTURE_MAINTENANCE'
+        state={'retcode':0,'ready':passed,'fullSaveAt':'2026-11-12T12:00:00Z'}
+        if self.path.endswith('/training'):state.update(online=True,bosses=[{'id':1,'name':'测试目标甲','available':True,'note':'选择'},{'id':2,'name':'测试目标乙','available':False,'note':'未开放'}],results=[],dps={'active':False})
+        data=json.dumps(state).encode()
         self.send_response(200 if passed else 403);self.send_header('Content-Type','application/json')
         self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def do_POST(self):
         size=int(self.headers.get('Content-Length','0'))
         body=self.rfile.read(size) if 0<=size<=4096 else b''
+        if self.path=='/local/manage/training-action':
+            value=json.loads(body);passed=self.headers.get('X-Local-Maintenance')=='FIXTURE_MAINTENANCE' and value=={'action':'dpsStart','args':{'seconds':120,'targets':1,'level':100,'resistance':10,'energy':-1,'heal':True}}
+            (output/'training-action.json').write_text(json.dumps({'passed':passed,'action':value},indent=2))
+            data=json.dumps({'retcode':0 if passed else -1,'online':True,'ready':True,'message':'测试已开始','dps':{'active':True,'remainingSeconds':120}}).encode()
+            self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
         passed=(self.path=='/hk4e_cn/mdk/shield/api/login?token=FIXTURE_INPUT_NEVER_RECORD&encoded=a%2Bb%2Fc%25'
             and body==b'{"fixture":"not-an-account","nonce":"routing-test"}'
             and self.headers.get('Content-Type')=='application/json')
@@ -956,6 +964,10 @@ try:
             (output/'play-support-fixture.json').write_text(json.dumps(support,indent=2))
             support_png=fixture_container/'Documents/play-support-menu.png'
             if support_png.is_file(): shutil.copy2(support_png,output/'play-support-menu.png')
+            training_png=fixture_container/'Documents/training-panel.png'
+            if training_png.is_file():shutil.copy2(training_png,output/'training-panel.png')
+            action_report=output/'training-action.json'
+            fixture_result['passed'] &= action_report.is_file() and json.loads(action_report.read_text()).get('passed') is True
             if observations.is_file():
                 raw=observations.read_text()
                 fixture_result['observations_exclude_sensitive_input']=all(x not in raw for x in ['FIXTURE_INPUT_NEVER_RECORD','token=','encoded=','routing-test','not-an-account'])
