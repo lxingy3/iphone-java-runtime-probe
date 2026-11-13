@@ -5,9 +5,11 @@
 @property(nonatomic,strong) WKWebView *web;
 @property(nonatomic,copy) NSString *storage;
 @property(nonatomic,weak) UIWindow *previousKey;
+@property(nonatomic,strong) NSMutableDictionary *diagnostics;
 @end
 @implementation RPSBattlePanel
 - (void)loadView {
+    self.diagnostics=[NSMutableDictionary new];
     WKWebViewConfiguration *config=[WKWebViewConfiguration new];
     [config.userContentController addScriptMessageHandler:self name:@"training"];
     self.web=[[WKWebView alloc] initWithFrame:CGRectZero configuration:config];self.web.navigationDelegate=self;
@@ -15,6 +17,8 @@
     self.view=self.web;self.title=@"木桩训练场";
     self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"返回游戏" style:UIBarButtonItemStyleDone target:self action:@selector(closePanel)];
     NSURL *file=[NSURL fileURLWithPath:[self.storage.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"battle-training.html"]];
+    self.diagnostics[@"fileExists"]=@([NSFileManager.defaultManager fileExistsAtPath:file.path]);
+    self.diagnostics[@"expectedPath"]=file.path;
     [self.web loadFileURL:file allowingReadAccessToURL:file];
 }
 - (void)viewDidAppear:(BOOL)animated {
@@ -29,7 +33,18 @@
 - (void)closePanel { [self dismissViewControllerAnimated:YES completion:nil]; }
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)action decisionHandler:(void (^)(WKNavigationActionPolicy))decision {
     NSURL *expected=[NSURL fileURLWithPath:[self.storage.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"battle-training.html"]];
-    decision(action.request.URL.isFileURL && [action.request.URL.path isEqual:expected.path]?WKNavigationActionPolicyAllow:WKNavigationActionPolicyCancel);
+    NSURL *actual=action.request.URL;
+    BOOL allowed=actual.isFileURL && [actual.URLByResolvingSymlinksInPath.path isEqual:expected.URLByResolvingSymlinksInPath.path];
+    self.diagnostics[@"navigationAllowed"]=@(allowed);
+    self.diagnostics[@"navigationPath"]=actual.isFileURL?(actual.path?:@""):@"non-file";
+    decision(allowed?WKNavigationActionPolicyAllow:WKNavigationActionPolicyCancel);
+}
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation { self.diagnostics[@"finished"]=@YES; }
+- (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    self.diagnostics[@"loadError"]=@(error.code);
+}
+- (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    self.diagnostics[@"loadError"]=@(error.code);
 }
 - (void)respond:(NSNumber *)identifier result:(NSDictionary *)result {
     NSData *json=[NSJSONSerialization dataWithJSONObject:@{@"id":identifier,@"payload":result} options:0 error:nil];
@@ -251,6 +266,7 @@
     if(![NSFileManager.defaultManager fileExistsAtPath:path]){[self message:@"训练台正在准备，请等本机服务就绪后再打开。"];return;}
     RPSBattlePanel *panel=[RPSBattlePanel new];panel.storage=self.storage;
     UINavigationController *navigation=[[UINavigationController alloc] initWithRootViewController:panel];
+    navigation.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
     navigation.modalPresentationStyle=UIModalPresentationFullScreen;
     [self presentViewController:navigation animated:YES completion:nil];
 }

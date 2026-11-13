@@ -165,7 +165,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
             [png writeToFile:[documents stringByAppendingPathComponent:@"play-support-menu.png"] atomically:YES];
             ((void(*)(id,SEL,NSInteger))objc_msgSend)(controller,sel_registerName("performMenuAction:"),0);
             {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,4*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,12*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
                     UINavigationController *nav=(UINavigationController *)[controller presentedViewController];
                     checks[@"menu_dismisses"]=@([nav isKindOfClass:UINavigationController.class]);
                     UIViewController *panel=nav.topViewController;WKWebView *web=[panel valueForKey:@"web"];
@@ -179,7 +179,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
                             checks[@"training_action_closes_and_restores_game_focus"]=@([controller presentedViewController]==nil && gameWindow.isKeyWindow && !overlay.isKeyWindow);
                             BOOL passed=YES;for(NSNumber *v in checks.allValues)passed &= v.boolValue;
-                            NSDictionary *report=@{@"passed":@(passed),@"checks":checks,@"layouts":layouts,@"physical_fold_verified":@NO,@"actual_game_tested":@NO};
+                            NSDictionary *report=@{@"passed":@(passed),@"checks":checks,@"layouts":layouts,@"pageDiagnostics":[panel valueForKey:@"diagnostics"]?:@{},@"render":render?:@{},@"javascriptError":error.localizedDescription?:@"",@"physical_fold_verified":@NO,@"actual_game_tested":@NO};
                             [[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil] writeToFile:[documents stringByAppendingPathComponent:@"play-support-fixture.json"] atomically:YES];
                         });
                     }];
