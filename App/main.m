@@ -152,6 +152,9 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         UIButton *interaction=[controller valueForKey:@"trainingInteraction"];
         checks[@"idle_dummy_proximity_interaction"]=@(!interaction.hidden&&[interaction.currentTitle isEqual:@"开始挑战"]);
         checks[@"lab_hud_max_hit_and_chart"]=@([dpsLabel.text containsString:@"98765"]&&![[controller valueForKey:@"trainingChart"] isHidden]&&![[controller valueForKey:@"trainingPanel"] isHidden]&&![[controller valueForKey:@"trainingDetails"] isHidden]);
+        [controller setValue:@{@"ready":@YES,@"dps":@{@"inArena":@YES,@"station":@{@"label":@"角色属性",@"section":@"party"}}} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        checks[@"room_station_proximity_action"]=@(!interaction.hidden&&[interaction.currentTitle isEqual:@"角色属性"]);
+        [controller setValue:@{@"ready":@YES,@"dps":lab} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         UIView *root=[controller view];CGRect original=root.frame;
         NSMutableArray *layouts=[NSMutableArray new];BOOL within=YES;
         CGSize sizes[]={{375,812},{812,375},{768,1024},{1024,768}};
@@ -162,7 +165,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         }
         root.frame=original;[root setNeedsLayout];[root layoutIfNeeded];
         checks[@"compact_and_expanded_layouts"]=@(within);
-        CGPoint blank=CGPointMake(CGRectGetMidX(overlay.bounds),CGRectGetMaxY(overlay.bounds)-50);
+        CGPoint blank=CGPointMake(CGRectGetWidth(overlay.bounds)*.85,CGRectGetMaxY(overlay.bounds)-50);
         checks[@"game_touches_pass_through"]=@([overlay hitTest:blank withEvent:nil]==nil);
         CGPoint center=[button convertPoint:CGPointMake(CGRectGetMidX(button.bounds),CGRectGetMidY(button.bounds)) toView:overlay];
         UIView *hit=[overlay hitTest:center withEvent:nil];
