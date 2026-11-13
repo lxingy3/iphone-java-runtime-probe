@@ -474,9 +474,10 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 - (void)layoutHUD {
     NSArray<NSValue *> *regions=[self.hud contentRegions];CGRect area=regions.firstObject.CGRectValue,controls=regions.lastObject.CGRectValue;
     self.button.frame=CGRectMake(area.origin.x+MIN(138,MAX(0,area.size.width*.18)),area.origin.y+8,MIN(44,area.size.width),44);
-    CGFloat messageLimit=MIN(390,MAX(44,area.size.width-24));CGSize messageSize=[self.message sizeThatFits:CGSizeMake(messageLimit-24,CGFLOAT_MAX)];
+    CGFloat messageLeft=MAX(area.origin.x+12,CGRectGetMaxX(self.button.frame)+8);
+    CGFloat messageLimit=MIN(390,MAX(44,CGRectGetMaxX(area)-12-messageLeft));CGSize messageSize=[self.message sizeThatFits:CGSizeMake(messageLimit-24,CGFLOAT_MAX)];
     CGFloat messageWidth=MIN(messageLimit,MAX(120,messageSize.width+24));
-    self.message.frame=CGRectMake(CGRectGetMidX(area)-messageWidth/2,area.origin.y+8,messageWidth,MIN(90,MAX(30,messageSize.height+12)));
+    self.message.frame=CGRectMake(MAX(messageLeft,CGRectGetMidX(area)-messageWidth/2),area.origin.y+8,messageWidth,MIN(90,MAX(30,messageSize.height+12)));
     CGFloat offset=MAX(80,CGRectGetMaxY(self.message.frame)-area.origin.y+8),width=MIN(220,area.size.width*.45),left=area.origin.x+10,top=area.origin.y+offset;
     CGFloat height=MIN(90,MAX(34,(area.size.height-offset-22)/3)),next=top;
     self.trainingDetails.frame=CGRectMake(left,next,width,height);if(!self.trainingDetails.hidden)next+=height+5;

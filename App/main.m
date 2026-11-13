@@ -171,7 +171,9 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         checks[@"overlay_does_not_take_key_window"]=@(gameWindow.isKeyWindow && !overlay.isKeyWindow);
         checks[@"readiness_accessible_without_persistent_text"]=@(!button.currentTitle.length&&[button.accessibilityValue isEqualToString:@"本机 · 就绪"]);
         UIImageView *symbol=[button valueForKey:@"symbol"];
-        checks[@"small_minimap_icon_without_sidebar"]=@(symbol!=nil&&button.subviews.count==1&&button.gestureRecognizers.count==0);
+        [button layoutIfNeeded];BOOL hasDrag=NO;
+        for(UIGestureRecognizer *gesture in button.gestureRecognizers)hasDrag|=[gesture isKindOfClass:UIPanGestureRecognizer.class];
+        checks[@"small_minimap_icon_without_sidebar"]=@(symbol!=nil&&symbol.frame.size.width==20&&symbol.frame.size.height==20&&CGColorGetAlpha(button.backgroundColor.CGColor)==0&&!hasDrag);
         [controller setValue:NSDate.date forKey:@"lastResponse"];
         [controller setValue:@{@"ready":@YES,@"dps":@{@"active":@YES,@"remainingSeconds":@42,@"hitCount":@180,@"totalDamage":@12345678,@"averageDps":@685871}} forKey:@"service"];
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
@@ -204,8 +206,9 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
             source.bounds=(CGRect){CGPointZero,sizes[i]};source.center=CGPointMake(CGRectGetMidX(gameWindow.bounds),CGRectGetMidY(gameWindow.bounds));
             ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("alignHUDToView:"),source);
             BOOL fit=CGRectContainsRect(root.bounds,button.frame)&&CGRectContainsRect(root.bounds,interaction.frame)&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingChart"] frame])&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingPanel"] frame]);within &= fit;
-            minimapAnchored &= button.frame.size.width==44&&button.frame.size.height==44&&CGRectGetMinX(button.frame)>root.safeAreaInsets.left+30&&CGRectGetMinY(button.frame)<=root.safeAreaInsets.top+12;
-            [layouts addObject:@{@"width":@(sizes[i].width),@"height":@(sizes[i].height),@"buttonFits":@(fit)}];
+            NSArray<NSValue *> *regions=((id(*)(id,SEL))objc_msgSend)(root,sel_registerName("contentRegions"));CGRect pane=regions.firstObject.CGRectValue;
+            minimapAnchored &= button.frame.size.width==44&&button.frame.size.height==44&&CGRectGetMinX(button.frame)>pane.origin.x+30&&fabs(CGRectGetMinY(button.frame)-pane.origin.y-8)<.5&&!CGRectIntersectsRect(button.frame,dpsLabel.frame);
+            [layouts addObject:@{@"width":@(sizes[i].width),@"height":@(sizes[i].height),@"buttonFits":@(fit),@"button":NSStringFromCGRect(button.frame),@"pane":NSStringFromCGRect(pane),@"banner":NSStringFromCGRect(dpsLabel.frame)}];
         }
         BOOL cornersMatch=YES,reportClear=YES;
         CGFloat turns[]={0,M_PI_2,M_PI,-M_PI_2};
