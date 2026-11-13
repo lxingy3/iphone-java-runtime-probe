@@ -1,0 +1,16 @@
+{
+  "origin": "Generated illustrations for the user-approved C concept; no extracted game files",
+  "reference": "C - bright courtyard with a light glass control sheet",
+  "files": {
+    "courtyard.png": "f491b334007b4847abe631dca5b2a819c46d7b3558628f9abc149fcf75efca16",
+    "portraits.png": "d6abeba784a19f670aed2da4cce7366ef8b90f1533d52006b38724c4b42e4f26"
+  },
+  "background": "Sunlit fantasy stone courtyard, blue sky, green trees and grass; no UI, text or characters",
+  "portraits": [
+    "wooden training dummy",
+    "mechanical samurai",
+    "molten armored crab",
+    "nautical shark"
+  ],
+  "actual3DMap": false
+}
