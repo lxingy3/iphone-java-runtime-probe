@@ -223,6 +223,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
             BOOL fit=CGRectContainsRect(root.bounds,button.frame)&&CGRectContainsRect(root.bounds,interaction.frame)&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingChart"] frame])&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingPanel"] frame]);within &= fit;
             NSArray<NSValue *> *regions=((id(*)(id,SEL))objc_msgSend)(root,sel_registerName("contentRegions"));CGRect pane=regions.firstObject.CGRectValue;
             minimapAnchored &= button.frame.size.width==44&&button.frame.size.height==44&&CGRectGetMinX(button.frame)>pane.origin.x+90&&CGRectGetMinY(button.frame)>pane.origin.y+80&&!CGRectIntersectsRect(button.frame,dpsLabel.frame);
+            for(NSString *key in @[@"trainingDetails",@"trainingChart",@"trainingPanel",@"trainingReport"])minimapAnchored &= !CGRectIntersectsRect(button.frame,[[controller valueForKey:key] frame]);
             [layouts addObject:@{@"width":@(sizes[i].width),@"height":@(sizes[i].height),@"buttonFits":@(fit),@"button":NSStringFromCGRect(button.frame),@"pane":NSStringFromCGRect(pane),@"banner":NSStringFromCGRect(dpsLabel.frame)}];
         }
         BOOL cornersMatch=YES,reportClear=YES;
@@ -1192,6 +1193,25 @@ static NSString *NativeSHA256(NSString *path, void (^progress)(unsigned long lon
     return [NSString stringWithUTF8String:hex];
 }
 
+// Verify the complete derived cache once per launch with the platform SHA-256.
+// Java still validates its source/core bindings and rejects a changed archive.
+static NSString *NativeStartupCacheProof(NSString *working) {
+    NSString *directory=[working stringByAppendingPathComponent:@"startup-cache"];
+    NSString *archive=[directory stringByAppendingPathComponent:@"resources.zip"];
+    NSData *raw=[NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"bindings.json"]];
+    if(!raw||raw.length>16*1024*1024)return nil;
+    id binding=[NSJSONSerialization JSONObjectWithData:raw options:0 error:nil];
+    if(![binding isKindOfClass:NSDictionary.class])return nil;
+    NSString *expected=binding[@"archiveSha256"];
+    if(![expected isKindOfClass:NSString.class]||expected.length!=64||[expected rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location!=NSNotFound)return nil;
+    struct stat before,after;
+    if(stat(archive.fileSystemRepresentation,&before)!=0||!S_ISREG(before.st_mode)||before.st_size<=0||before.st_size>2147483648LL)return nil;
+    NSString *actual=NativeSHA256(archive,nil);
+    if(![actual isEqualToString:expected]||stat(archive.fileSystemRepresentation,&after)!=0||before.st_ino!=after.st_ino||before.st_dev!=after.st_dev||before.st_size!=after.st_size||before.st_mtimespec.tv_sec!=after.st_mtimespec.tv_sec||before.st_mtimespec.tv_nsec!=after.st_mtimespec.tv_nsec)return nil;
+    long long millis=(long long)after.st_mtimespec.tv_sec*1000+after.st_mtimespec.tv_nsec/1000000;
+    return [NSString stringWithFormat:@"%@:%lld:%lld",actual,(long long)after.st_size,millis];
+}
+
 // Same bytes and file for both implementations; run only in the simulator test harness.
 static BOOL ChecksumBenchmark(JNIEnv *env, jclass cls) {
     NSString *path = [Documents() stringByAppendingPathComponent:@"checksum-fixture.bin"];
@@ -1218,7 +1238,21 @@ static BOOL ChecksumBenchmark(JNIEnv *env, jclass cls) {
     if (raw) (*env)->ReleaseStringUTFChars(env, value, raw); (*env)->DeleteLocalRef(env, value);
     NSString *expected = @"341aacac661ccb210720bedaa9ead5d668fe5ea41a73532fc147c71e34040df1";
     BOOL passed = [nativeHash isEqualToString:expected] && [javaHash isEqualToString:expected];
+    NSString *fixture=[Documents() stringByAppendingPathComponent:@"startup-cache-proof-fixture"];
+    NSString *cache=[fixture stringByAppendingPathComponent:@"startup-cache"];
+    [NSFileManager.defaultManager createDirectoryAtPath:cache withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *copy=[cache stringByAppendingPathComponent:@"resources.zip"];
+    [[NSData dataWithContentsOfFile:path] writeToFile:copy atomically:YES];
+    NSString *binding=[cache stringByAppendingPathComponent:@"bindings.json"];
+    [[NSJSONSerialization dataWithJSONObject:@{@"archiveSha256":expected} options:0 error:nil] writeToFile:binding atomically:YES];
+    BOOL proofAccepted=NativeStartupCacheProof(fixture)!=nil;
+    FILE *changed=fopen(copy.fileSystemRepresentation,"r+b");if(changed){fputc(42,changed);fclose(changed);}
+    BOOL corruptRejected=NativeStartupCacheProof(fixture)==nil;
+    [@"{}" writeToFile:binding atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    BOOL missingRejected=NativeStartupCacheProof(fixture)==nil;
+    passed &= proofAccepted&&corruptRejected&&missingRejected;
     WriteJSON(@"checksum-benchmark.json", @{@"passed":@(passed), @"bytes":@(16*1024*1024),
+        @"cache_proof_verified":@(proofAccepted),@"corrupt_archive_rejected":@(corruptRejected),@"missing_binding_rejected":@(missingRejected),
         @"native_seconds":@(nativeSeconds), @"java_seconds":@(javaSeconds),
         @"native_sha256":nativeHash ?: @"", @"java_sha256":javaHash ?: @""});
     fprintf(stderr, "Checksum benchmark: native=%.3fs Java Zero=%.3fs equal=%d\n", nativeSeconds, javaSeconds, passed);
@@ -1386,6 +1420,7 @@ static BOOL ChecksumBenchmark(JNIEnv *env, jclass cls) {
                 [@"--patch-module=java.base=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"RuntimePatch.jar"]]
             ] mutableCopy];
             [arguments addObjectsFromArray:RPRuntimeMemoryArguments(server)];
+            if(server){NSString *proof=NativeStartupCacheProof(working);if(proof)[arguments addObject:[@"-Dlocal.startup.cache.nativeArchive=" stringByAppendingString:proof]];}
             JavaVMOption options[16] = {0};
             if (arguments.count > sizeof(options)/sizeof(options[0])) {
                 [self updatePhase:@"failed" status:@"运行环境参数数量异常"]; return;

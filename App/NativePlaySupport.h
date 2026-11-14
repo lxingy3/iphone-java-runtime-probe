@@ -545,8 +545,8 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         CGRect notice=self.message.frame;notice.origin.y=CGRectGetMaxY(self.button.frame)+6;self.message.frame=notice;
     }
     self.statusMenu.frame=self.hud.bounds;[self.statusMenu setNeedsLayout];
-    CGFloat offset=MAX(80,CGRectGetMaxY(self.message.frame)-area.origin.y+8),width=MIN(220,area.size.width*.45),left=area.origin.x+10,top=area.origin.y+offset;
-    CGFloat height=MIN(90,MAX(34,(area.size.height-offset-22)/3)),next=top;
+    CGFloat offset=MAX(CGRectGetMaxY(self.button.frame)-area.origin.y+6,CGRectGetMaxY(self.message.frame)-area.origin.y+8),width=MIN(220,area.size.width*.45),left=area.origin.x+10,top=area.origin.y+offset;
+    CGFloat height=MIN(90,MAX(22,(area.size.height-offset-76)/3)),next=top;
     self.trainingDetails.frame=CGRectMake(left,next,width,height);if(!self.trainingDetails.hidden)next+=height+5;
     self.trainingChart.frame=CGRectMake(left,next,width,height);if(!self.trainingChart.hidden)next+=height+5;
     self.trainingPanel.frame=CGRectMake(left,next,width,height);self.trainingPanel.font=RPSTrainingFont(height<80?10:11);self.trainingDetails.font=RPSTrainingFont(height<80?10:11);
