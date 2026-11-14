@@ -23,6 +23,7 @@ static void RPCDisplayFixture(NSString *documents,UIWindow *window) {
     checks[@"baseline_primary_display_assertion_reproduced"]=@(threw);
     Class compatibility=NSClassFromString(@"RPSDisplayCompatibility");
     UIView *surface=window.rootViewController.view;
+    UIEdgeInsets originalInsets=window.rootViewController.additionalSafeAreaInsets;
     BOOL installed=((BOOL(*)(id,SEL,Class,id))objc_msgSend)(compatibility,sel_registerName("installForDisplayClass:surfaceProvider:"),RPFixtureDisplay.class,^UIView *{return surface;});
     checks[@"scoped_hook_installed"]=@(installed);
     CGRect originalBounds=surface.bounds;BOOL transitions=YES;
@@ -38,14 +39,9 @@ static void RPCDisplayFixture(NSString *documents,UIWindow *window) {
     RPFixtureDisplay *external=[RPFixtureDisplay new];external.screen=[NSObject new];
     [external createView:YES showRightAway:NO];checks[@"external_display_creation_preserved"]=@(external.externalCreates==1&&external.view!=surface);
     surface.bounds=originalBounds;
-    UIViewController *root=window.rootViewController;UIEdgeInsets original=root.additionalSafeAreaInsets;
-    for(int i=0;i<100;i++)((void(*)(id,SEL,id))objc_msgSend)(compatibility,sel_registerName("applyComfortInsetsToSurface:"),surface);
-    UIEdgeInsets first=root.additionalSafeAreaInsets;
-    for(int i=0;i<100;i++)((void(*)(id,SEL,id))objc_msgSend)(compatibility,sel_registerName("applyComfortInsetsToSurface:"),surface);
-    checks[@"touch_insets_do_not_accumulate"]=@(UIEdgeInsetsEqualToEdgeInsets(first,root.additionalSafeAreaInsets));
+    checks[@"game_button_insets_preserved"]=@(UIEdgeInsetsEqualToEdgeInsets(originalInsets,window.rootViewController.additionalSafeAreaInsets));
     checks[@"camera_surface_keeps_full_bounds"]=@(CGRectEqualToRect(originalBounds,surface.bounds));
     checks[@"display_bridge_preserves_key_window"]=@(window.isKeyWindow);
-    root.additionalSafeAreaInsets=original;
     BOOL passed=YES;for(NSNumber *value in checks.allValues)passed &= value.boolValue;
     NSDictionary *report=@{@"passed":@(passed),@"checks":checks,@"physical_device_tested":@NO};
     [[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil] writeToFile:[documents stringByAppendingPathComponent:@"display-compatibility-fixture.json"] atomically:YES];

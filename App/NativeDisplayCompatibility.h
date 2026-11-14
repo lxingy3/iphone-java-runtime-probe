@@ -35,12 +35,10 @@ static BOOL RPSMethodMatches(Class cls,NSString *name,const char *result,NSArray
 + (BOOL)installForDisplayClass:(Class)cls surfaceProvider:(UIView *(^)(void))provider;
 + (BOOL)bindPrimaryDisplay:(id)display surface:(UIView *)surface;
 + (void)install;
-+ (void)applyComfortInsetsToSurface:(UIView *)surface;
 + (NSDictionary *)snapshot;
 @end
 static NSUInteger RPSDisplayRepairs,RPSDisplayLookups;
 static BOOL RPSDisplayInstalled,RPSLookupInstalled;
-static char RPSComfortInsetsKey;
 @implementation RPSDisplayCompatibility
 + (BOOL)bindPrimaryDisplay:(id)display surface:(UIView *)surface {
     if(!NSThread.isMainThread||!surface.window||!surface.window.windowScene)return NO;
@@ -81,18 +79,6 @@ static char RPSComfortInsetsKey;
             class_replaceMethod(manager,selector,wrapper,method_getTypeEncoding(method));RPSLookupInstalled=YES;
         }
     });
-}
-+ (void)applyComfortInsetsToSurface:(UIView *)surface {
-    if(!NSThread.isMainThread||!surface.window)return;
-    UIViewController *root=surface.window.rootViewController;if(!root)return;
-    NSDictionary *record=objc_getAssociatedObject(root,&RPSComfortInsetsKey);
-    UIEdgeInsets current=root.additionalSafeAreaInsets,base=record?[record[@"base"] UIEdgeInsetsValue]:current;
-    if(record&&!UIEdgeInsetsEqualToEdgeInsets(current,[record[@"applied"] UIEdgeInsetsValue]))base=current;
-    UIEdgeInsets total=root.view.safeAreaInsets;
-    UIEdgeInsets natural=UIEdgeInsetsMake(MAX(0,total.top-current.top),MAX(0,total.left-current.left),MAX(0,total.bottom-current.bottom),MAX(0,total.right-current.right));
-    CGFloat margin=18;UIEdgeInsets next=UIEdgeInsetsMake(MAX(base.top,margin-natural.top),MAX(base.left,margin-natural.left),MAX(base.bottom,margin-natural.bottom),MAX(base.right,margin-natural.right));
-    objc_setAssociatedObject(root,&RPSComfortInsetsKey,@{@"base":[NSValue valueWithUIEdgeInsets:base],@"applied":[NSValue valueWithUIEdgeInsets:next]},OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if(!UIEdgeInsetsEqualToEdgeInsets(current,next)){root.additionalSafeAreaInsets=next;[root.view setNeedsLayout];}
 }
 + (NSDictionary *)snapshot{return @{@"primaryBindingHook":@(RPSDisplayInstalled),@"displayLookupHook":@(RPSLookupInstalled),@"primaryRebinds":@(RPSDisplayRepairs),@"displayLookups":@(RPSDisplayLookups)};}
 @end

@@ -407,7 +407,6 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 }
 - (void)syncGameGeometry {
     if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive||!self.gameSurface)return;
-    [RPSDisplayCompatibility applyComfortInsetsToSurface:self.gameSurface];
     [self alignHUDToView:self.gameSurface];
     NSString *signature=[NSString stringWithFormat:@"%@|%@|%@|%@|%@|%@",NSStringFromCGRect(self.overlay.windowScene.coordinateSpace.bounds),NSStringFromCGRect(self.gameWindow.bounds),NSStringFromCGRect(self.gameSurface.bounds),NSStringFromCGAffineTransform(self.hud.transform),NSStringFromCGPoint(self.hud.center),NSStringFromUIEdgeInsets(self.gameSurface.safeAreaInsets)];
     if(![signature isEqual:self.geometrySignature]&&self.storage){
