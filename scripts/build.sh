@@ -1035,13 +1035,19 @@ try:
                     # Allow Core Animation to commit before reading the compositor,
                     # independently of the already completed GPU readback.
                     time.sleep(.35)
-                    capture=output/('display-frame-'+label+'-'+str(sequence)+'.png')
-                    command('xcrun','simctl','io',udid,'screenshot',str(capture),timeout=40)
-                    checked=command('build/check-display-frame',str(capture),str(frame['red']),str(frame['green']),check=False)
-                    result_frame=dict(sequence=sequence,**json.loads(checked.stdout))
+                    attempts=[];result_frame=None
+                    # Duo has two powered compositors. The host's scene chooses
+                    # its display; do not mistake a screenshot of the other
+                    # screen for a stalled renderer.
+                    for display in (['1','3'] if profile=='duo' else [None]):
+                        capture=output/('display-frame-'+label+'-'+str(sequence)+'-'+str(display)+'.png')
+                        command('xcrun','simctl','io',udid,'screenshot',*(['--display='+display] if display else []),str(capture),timeout=40)
+                        checked=command('build/check-display-frame',str(capture),str(frame['red']),str(frame['green']),check=False)
+                        observation=dict(sequence=sequence,display=display,**json.loads(checked.stdout));attempts.append(observation)
+                        if checked.returncode==0:result_frame=observation;break
+                    assert result_frame,attempts
                     captures.append(result_frame)
                     (output/('display-captures-'+label+'.json')).write_text(json.dumps(captures,indent=2))
-                    assert checked.returncode==0,result_frame
                     captured_sequences.add(sequence);frame_ack.write_text(str(sequence))
             time.sleep(.2)
         transition=json.loads(transition_report.read_text()) if transition_report.is_file() else {'passed':False,'failure':'Transition fixture timed out'}
