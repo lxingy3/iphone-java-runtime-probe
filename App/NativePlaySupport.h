@@ -265,6 +265,59 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 }
 @end
 
+// The menu uses the same coordinates and font as the HUD. Its backdrop consumes
+// the dismissing touch, so closing it cannot also trigger an attack underneath.
+@interface RPSLocalMenu : UIView
+@property(nonatomic,strong) UIButton *backdrop;
+@property(nonatomic,strong) UIControl *panel;
+@property(nonatomic,strong) UILabel *heading;
+@property(nonatomic,strong) UILabel *status;
+@property(nonatomic,strong) UILabel *details;
+@property(nonatomic,strong) NSArray<UIButton *> *actions;
+@property(nonatomic,copy) void (^choose)(NSInteger);
+@property(nonatomic,copy) void (^close)(void);
+- (void)updateStatus:(NSString *)status details:(NSString *)details;
+@end
+@implementation RPSLocalMenu
+- (instancetype)initWithFrame:(CGRect)frame {
+    if((self=[super initWithFrame:frame])){
+        self.backdrop=[UIButton buttonWithType:UIButtonTypeCustom];self.backdrop.backgroundColor=[UIColor colorWithWhite:0 alpha:.16];
+        self.backdrop.accessibilityLabel=@"返回游戏";[self.backdrop addTarget:self action:@selector(dismissMenu) forControlEvents:UIControlEventTouchUpInside];[self addSubview:self.backdrop];
+        self.panel=[UIControl new];self.panel.backgroundColor=[UIColor colorWithRed:.94 green:.92 blue:.87 alpha:.97];
+        self.panel.layer.cornerRadius=16;self.panel.layer.borderWidth=1;self.panel.layer.borderColor=[UIColor colorWithRed:.72 green:.63 blue:.43 alpha:1].CGColor;
+        self.panel.layer.shadowColor=UIColor.blackColor.CGColor;self.panel.layer.shadowOpacity=.22;self.panel.layer.shadowRadius=15;self.panel.layer.shadowOffset=CGSizeMake(0,6);[self addSubview:self.panel];
+        self.heading=[UILabel new];self.heading.text=@"本机";self.heading.font=RPSTrainingFont(18);
+        self.status=[UILabel new];self.status.font=RPSTrainingFont(12);self.status.textAlignment=NSTextAlignmentRight;
+        self.details=[UILabel new];self.details.font=RPSTrainingFont(11);self.details.numberOfLines=2;
+        for(UILabel *label in @[self.heading,self.status,self.details]){label.textColor=[UIColor colorWithRed:.18 green:.23 blue:.31 alpha:1];[self.panel addSubview:label];}
+        NSMutableArray *buttons=[NSMutableArray new];NSArray *labels=@[@"木桩训练场",@"保存进度",@"备份并导出",@"游玩手册"];
+        NSArray *icons=@[@"scope",@"checkmark.seal",@"square.and.arrow.up",@"book.closed"];
+        for(NSInteger i=0;i<labels.count;i++){
+            UIButton *button=[UIButton buttonWithType:UIButtonTypeSystem];button.tag=i;button.titleLabel.font=RPSTrainingFont(14);
+            [button setTitle:labels[i] forState:UIControlStateNormal];button.tintColor=self.heading.textColor;
+            [button setImage:[UIImage systemImageNamed:icons[i] withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:16]] forState:UIControlStateNormal];
+            button.imageEdgeInsets=UIEdgeInsetsMake(0,-5,0,5);button.backgroundColor=[UIColor colorWithRed:1 green:.985 blue:.945 alpha:1];
+            button.layer.cornerRadius=20;button.layer.borderColor=[UIColor colorWithRed:.78 green:.72 blue:.58 alpha:1].CGColor;button.layer.borderWidth=1;
+            [button addTarget:self action:@selector(selectAction:) forControlEvents:UIControlEventTouchUpInside];[buttons addObject:button];[self.panel addSubview:button];
+        }self.actions=buttons;
+    }return self;
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];self.backdrop.frame=self.bounds;
+    NSArray<NSValue *> *regions=[self.superview isKindOfClass:RPSAdaptiveView.class]?[(RPSAdaptiveView *)self.superview contentRegions]:@[[NSValue valueWithCGRect:self.bounds]];
+    CGRect area=regions.firstObject.CGRectValue;for(NSValue *value in regions)if(value.CGRectValue.size.width*value.CGRectValue.size.height>area.size.width*area.size.height)area=value.CGRectValue;
+    CGFloat width=MIN(396,MAX(220,area.size.width-32)),height=MIN(214,area.size.height-24);
+    self.panel.frame=CGRectMake(CGRectGetMidX(area)-width/2,CGRectGetMidY(area)-height/2,width,height);
+    CGFloat inset=16,gap=10,cell=(width-inset*2-gap)/2,rowHeight=MAX(36,MIN(44,(height-108)/2));
+    self.heading.frame=CGRectMake(inset,12,80,24);self.status.frame=CGRectMake(94,14,width-110,22);
+    for(NSUInteger i=0;i<self.actions.count;i++)self.actions[i].frame=CGRectMake(inset+(i%2)*(cell+gap),47+(i/2)*(rowHeight+8),cell,rowHeight);
+    self.details.frame=CGRectMake(inset,height-43,width-inset*2,31);
+}
+- (void)updateStatus:(NSString *)status details:(NSString *)details {self.status.text=status;self.details.text=details;}
+- (void)selectAction:(UIButton *)sender {if(self.choose)self.choose(sender.tag);}
+- (void)dismissMenu {if(self.close)self.close();}
+@end
+
 @interface RPSPlaySupport : UIViewController
 @property(nonatomic,strong) RPSOverlayWindow *overlay;
 @property(nonatomic,strong) RPSAdaptiveView *hud;
@@ -296,7 +349,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 @property(nonatomic,copy) NSString *visibleStatus;
 @property(nonatomic,strong) NSDate *statusChangedAt;
 @property(nonatomic) BOOL messageVisible;
-@property(nonatomic,weak) UIAlertController *statusMenu;
+@property(nonatomic,weak) RPSLocalMenu *statusMenu;
 @property(nonatomic,copy) NSString *statusMenuExpiry;
 + (instancetype)shared;
 - (void)start:(NSString *)storage;
@@ -409,10 +462,11 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     [self attach]; if(!self.overlay || UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) return;
     NSDictionary *host=RPHostSnapshot();
     BOOL failed=[host[@"phase"] isEqual:@"failed"];
-    BOOL healthy=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<20 && [self.service[@"ready"] boolValue];
+    BOOL healthy=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<4 && [self.service[@"ready"] boolValue];
+    BOOL inWorld=healthy && [self.service[@"worldReady"] boolValue];
     NSDictionary *dps=[self.service[@"dps"] isKindOfClass:NSDictionary.class]?self.service[@"dps"]:nil;
-    BOOL testing=healthy && [dps[@"active"] boolValue];
-    BOOL lab=healthy && [dps[@"mode"] isEqual:@"lab"];
+    BOOL testing=inWorld && [dps[@"active"] boolValue];
+    BOOL lab=inWorld && [dps[@"mode"] isEqual:@"lab"];
     NSString *title=failed ? @"本机 · 异常" : healthy ? @"本机 · 就绪" : self.readyAt ? @"本机 · 等待响应" : @"本机 · 准备中";
     NSString *readiness=title;
     if(healthy && [self.service[@"busy"] boolValue])title=@"本机 · 保存中";
@@ -420,12 +474,12 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.button.accessibilityValue=title;
     if(![readiness isEqualToString:self.visibleStatus]){self.visibleStatus=readiness;self.statusChangedAt=NSDate.date;}
     if(healthy && !self.readyAt) self.readyAt=NSDate.date;
-    if(healthy) self.message.text=@"本机已就绪";
-    else if(failed) self.message.text=@"本机启动异常";
-    else if(self.readyAt) self.message.text=@"等待本机响应…";
-    else {NSInteger elapsed=MAX(0,(NSInteger)-self.began.timeIntervalSinceNow);self.message.text=[NSString stringWithFormat:@"本机加载中 · %ld:%02ld",(long)elapsed/60,(long)elapsed%60];}
-    // Loading remains visible for its entire duration; only a confirmed ready state fades.
-    BOOL showMessage=!healthy||!self.statusChangedAt||-self.statusChangedAt.timeIntervalSinceNow<1.5;
+    self.button.hidden=!inWorld;
+    if(healthy) self.message.text=@"本机 · 就绪";
+    else if(failed) self.message.text=@"本机 · 启动异常";
+    else self.message.text=@"本机 · 加载中";
+    // Ready alone is not world entry. Keep the banner through login and scene loading.
+    BOOL showMessage=!inWorld;
     if(testing && ![self.service[@"hideDpsHud"] boolValue]){
         showMessage=YES;
         NSString *clock=[dps[@"mode"] isEqual:@"boss"]?[NSString stringWithFormat:@"%@ · %.0f 秒",dps[@"title"]?:@"挑战",[dps[@"elapsedSeconds"] doubleValue]]:[NSString stringWithFormat:@"木桩 · 剩余 %@ 秒",dps[@"remainingSeconds"]?:@0];
@@ -438,7 +492,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         self.message.text=[NSString stringWithFormat:@"  %@　DPS %.0f  \n  累计 %.0f　最高一击 %.0f  ",time,[dps[@"averageDps"] doubleValue],[dps[@"totalDamage"] doubleValue],[dps[@"maxHit"] doubleValue]];
         if(-self.lastResponse.timeIntervalSinceNow>3 || [self.service[@"statisticsPending"] boolValue])self.message.text=@"  战斗统计正在同步…  ";
     }
-    [self updateTrainingHUD:healthy?dps:nil];
+    [self updateTrainingHUD:inWorld?dps:nil];
     NSDictionary *finished=[self.service[@"lastTrainingResult"] isKindOfClass:NSDictionary.class]?self.service[@"lastTrainingResult"]:nil;
     NSString *resultId=finished[@"id"];
     if(resultId.length && ![resultId isEqualToString:self.lastResultId]){
@@ -447,13 +501,13 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         NSDate *at=[parser dateFromString:finished[@"at"]?:@""];
         if(at && [at compare:self.began]!=NSOrderedAscending)self.resultReceivedAt=NSDate.date;
     }
-    if(!testing && healthy && self.resultReceivedAt && -self.resultReceivedAt.timeIntervalSinceNow<12 && ![self.service[@"hideDpsHud"] boolValue]){
+    if(!testing && inWorld && self.resultReceivedAt && -self.resultReceivedAt.timeIntervalSinceNow<12 && ![self.service[@"hideDpsHud"] boolValue]){
         showMessage=YES;
         self.message.text=[NSString stringWithFormat:@"  %@ · %@  \n  总伤害 %.0f · DPS %.0f · 在「成绩」查看占比  ",finished[@"title"]?:@"训练",finished[@"outcome"]?:@"完成",[finished[@"totalDamage"] doubleValue],[finished[@"averageDps"] doubleValue]];
     }
     [self setStatusMessageVisible:showMessage];
     [self refreshStatusMenu];
-    NSInteger interval=(!healthy||self.statusMenu)?2:10;
+    NSInteger interval=2;
     if((++self.ticks%interval==0 || testing || lab || [dps[@"inArena"] boolValue]) && !self.fetching) [self request:@"status" completion:^(NSDictionary *result){}];
 }
 - (void)setStatusMessageVisible:(BOOL)visible {
@@ -474,10 +528,10 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 - (void)layoutHUD {
     NSArray<NSValue *> *regions=[self.hud contentRegions];CGRect area=regions.firstObject.CGRectValue,controls=regions.lastObject.CGRectValue;
     self.button.frame=CGRectMake(area.origin.x+MIN(138,MAX(0,area.size.width*.18)),area.origin.y+8,MIN(44,area.size.width),44);
-    CGFloat messageLeft=MAX(area.origin.x+12,CGRectGetMaxX(self.button.frame)+8);
-    CGFloat messageLimit=MIN(390,MAX(44,CGRectGetMaxX(area)-12-messageLeft));CGSize messageSize=[self.message sizeThatFits:CGSizeMake(messageLimit-24,CGFLOAT_MAX)];
+    CGFloat messageLimit=MIN(390,MAX(44,area.size.width-24));CGSize messageSize=[self.message sizeThatFits:CGSizeMake(messageLimit-24,CGFLOAT_MAX)];
     CGFloat messageWidth=MIN(messageLimit,MAX(120,messageSize.width+24));
-    self.message.frame=CGRectMake(MAX(messageLeft,CGRectGetMidX(area)-messageWidth/2),area.origin.y+8,messageWidth,MIN(90,MAX(30,messageSize.height+12)));
+    self.message.frame=CGRectMake(CGRectGetMidX(area)-messageWidth/2,area.origin.y+8,messageWidth,MIN(90,MAX(30,messageSize.height+12)));
+    self.statusMenu.frame=self.hud.bounds;[self.statusMenu setNeedsLayout];
     CGFloat offset=MAX(80,CGRectGetMaxY(self.message.frame)-area.origin.y+8),width=MIN(220,area.size.width*.45),left=area.origin.x+10,top=area.origin.y+offset;
     CGFloat height=MIN(90,MAX(34,(area.size.height-offset-22)/3)),next=top;
     self.trainingDetails.frame=CGRectMake(left,next,width,height);if(!self.trainingDetails.hidden)next+=height+5;
@@ -511,7 +565,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     if(![self.trainingInteraction.currentTitle isEqual:action])[self.trainingInteraction setTitle:action forState:UIControlStateNormal];
 }
 - (void)pollTrainingInteraction {
-    if(self.interactionFetching||self.trainingRequest||self.presentedViewController||UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;
+    if(self.interactionFetching||self.trainingRequest||self.presentedViewController||self.statusMenu||UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;
     if(![self.service[@"dps"][@"inArena"] boolValue]||!self.lastResponse||-self.lastResponse.timeIntervalSinceNow>3)return;
     NSString *token=[NSString stringWithContentsOfFile:[self.storage stringByAppendingPathComponent:@"server/local-maintenance.token"] encoding:NSUTF8StringEncoding error:nil];
     if(!token.length)return;
@@ -569,6 +623,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if(status) self.fetching=NO; else self.saving=NO;
             if(result){ self.service=result;self.lastResponse=NSDate.date;[self refreshStatusMenu]; }
+            else if(status){self.lastResponse=nil;}
             completion(result);
         });
     }] resume];
@@ -604,7 +659,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     if(self.saving){[self message:@"上一次保存尚未完成，请稍候。"];return;}
     [self request:backup?@"backup":@"save" completion:^(NSDictionary *result){
         if(!result){[self message:@"尚未确认保存完成。请保持前台，稍后重试；不要删除 App。"];return;}
-        if(!backup){[self message:@"进度已保存到手机。正常退出时，建议先返回游戏登录页。"];return;}
+        if(!backup){[self message:@"进度已保存"];return;}
         NSString *name=result[@"lastBackup"];
         if(![name isKindOfClass:NSString.class] || ![name isEqualToString:name.lastPathComponent] || ![name hasSuffix:@".zip"]){[self message:@"备份文件名无效。"];return;}
         NSURL *url=[NSURL fileURLWithPath:[[self.storage stringByAppendingPathComponent:@"Backups"] stringByAppendingPathComponent:name]];
@@ -636,6 +691,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     [self presentViewController:navigation animated:YES completion:nil];
 }
 - (void)performMenuAction:(NSInteger)choice {
+    [self closeStatus];
     void (^run)(void)=^{
         switch(choice){
             case 0: [self showTraining];break;
@@ -650,7 +706,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     else if(!self.presentedViewController)run();
 }
 - (NSString *)statusMenuText {
-    BOOL healthy=self.lastResponse&&-self.lastResponse.timeIntervalSinceNow<20&&[self.service[@"ready"] boolValue];
+    BOOL healthy=self.lastResponse&&-self.lastResponse.timeIntervalSinceNow<4&&[self.service[@"ready"] boolValue];
     NSInteger elapsed=MAX(0,(NSInteger)-self.began.timeIntervalSinceNow);
     NSString *state=healthy?@"本机已就绪":self.readyAt?@"等待本机响应…":[NSString stringWithFormat:@"本机加载中 · %ld:%02ld",(long)elapsed/60,(long)elapsed%60];
     if(healthy&&[self.service[@"busy"] boolValue])state=@"保存中…";
@@ -659,20 +715,17 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 }
 - (void)refreshStatusMenu {
     if(!self.statusMenu)return;
-    NSString *text=[self statusMenuText];
-    if(![self.statusMenu.message isEqualToString:text])self.statusMenu.message=text;
+    NSArray *parts=[[self statusMenuText] componentsSeparatedByString:@"\n"];
+    [self.statusMenu updateStatus:parts.firstObject details:[[parts subarrayWithRange:NSMakeRange(1,parts.count-1)] componentsJoinedByString:@"\n"]];
 }
+- (void)closeStatus {[self.statusMenu removeFromSuperview];self.statusMenu=nil;}
 - (void)showStatus {
-    if(self.presentedViewController) return;
+    if(self.presentedViewController || self.statusMenu) return;
     self.statusMenuExpiry=[self expiry];
-    UIAlertController *menu=[UIAlertController alertControllerWithTitle:@"本机游玩" message:[self statusMenuText] preferredStyle:UIAlertControllerStyleAlert];
-    self.statusMenu=menu;
-    [menu addAction:[UIAlertAction actionWithTitle:@"木桩训练场" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:0];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"保存进度" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:1];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"备份并导出" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:2];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"使用手册与命令" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){[self performMenuAction:3];}]];
-    [menu addAction:[UIAlertAction actionWithTitle:@"继续游戏" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:menu animated:YES completion:nil];
+    RPSLocalMenu *menu=[[RPSLocalMenu alloc] initWithFrame:self.hud.bounds];self.statusMenu=menu;
+    __weak RPSPlaySupport *weakSelf=self;
+    menu.choose=^(NSInteger choice){[weakSelf performMenuAction:choice];};menu.close=^{[weakSelf closeStatus];};
+    [self.hud addSubview:menu];[self refreshStatusMenu];[menu setNeedsLayout];
     if(!self.fetching)[self request:@"status" completion:^(NSDictionary *result){}];
 }
 @end
