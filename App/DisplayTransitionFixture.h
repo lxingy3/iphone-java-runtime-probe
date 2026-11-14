@@ -36,9 +36,10 @@
 @property(nonatomic,strong) id<MTLCommandQueue> queue;
 @property(nonatomic,strong) NSArray<NSDictionary *> *steps;
 @property(nonatomic,strong) NSMutableArray *results;
-@property(nonatomic) NSUInteger index,frames,presented;
+@property(nonatomic) NSUInteger index,frames,submitted;
 @property(nonatomic) BOOL done,baseline;
 - (void)next;
+- (void)waitForCapture:(NSUInteger)sequence deadline:(NSDate *)deadline;
 @end
 @implementation RPTransitionRunner
 - (void)finish:(NSString *)failure {
@@ -46,12 +47,21 @@
     BOOL passed=!failure.length&&self.results.count==self.steps.count;
     for(NSDictionary *row in self.results)passed&=[row[@"passed"] boolValue];
     NSDictionary *report=@{@"passed":@(passed),@"failure":failure?:@"",@"steps":self.results,
-        @"framesReadBack":@(self.frames),@"drawablesPresented":@(self.presented),
+        @"framesReadBack":@(self.frames),@"drawablesSubmitted":@(self.submitted),
+        @"presentationTimingAvailable":@NO,
         @"baseline":@(self.baseline),@"syntheticWindowGeometry":@YES,
         @"physicalHingeTested":@NO,@"actualGameRendererTested":@NO};
     NSString *doc=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
     [[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil]
         writeToFile:[doc stringByAppendingPathComponent:@"display-transition-fixture.json"] atomically:YES];
+}
+- (void)waitForCapture:(NSUInteger)sequence deadline:(NSDate *)deadline {
+    if(self.done)return;
+    NSString *doc=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    NSString *ack=[NSString stringWithContentsOfFile:[doc stringByAppendingPathComponent:@"display-frame-ack"] encoding:NSUTF8StringEncoding error:nil];
+    if(ack.length&&ack.integerValue==sequence){[self next];return;}
+    if(deadline.timeIntervalSinceNow<=0){[self finish:@"Compositor screenshot was not acknowledged"];return;}
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC/5),dispatch_get_main_queue(),^{[self waitForCapture:sequence deadline:deadline];});
 }
 - (void)renderStep:(NSDictionary *)step binding:(BOOL)binding touch:(BOOL)touch {
     CAMetalLayer *layer=(CAMetalLayer *)self.surface.layer;
@@ -71,28 +81,32 @@
     [blit copyFromTexture:drawable.texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
         sourceSize:MTLSizeMake(1,1,1) toBuffer:pixel destinationOffset:0 destinationBytesPerRow:256 destinationBytesPerImage:256];
     [blit endEncoding];
-    __block BOOL completed=NO,presented=NO,readback=NO;
+    __block BOOL completed=NO,readback=NO;
     __weak RPTransitionRunner *weak=self;
     void (^advance)(void)=^{
         RPTransitionRunner *runner=weak;
-        if(!runner||runner.done||runner.index!=sequence||!completed||!presented)return;
+        if(!runner||runner.done||runner.index!=sequence||!completed)return;
         NSMutableDictionary *row=[step mutableCopy];
-        row[@"binding"]=@(binding);row[@"touchRoundTrip"]=@(touch);row[@"pixelChanged"]=@(readback);row[@"presented"]=@YES;
+        row[@"binding"]=@(binding);row[@"touchRoundTrip"]=@(touch);row[@"pixelChanged"]=@(readback);row[@"presentationSubmitted"]=@YES;
         row[@"passed"]=@(binding&&touch&&readback);
         [runner.results addObject:row];runner.index++;
-        dispatch_async(dispatch_get_main_queue(),^{[runner next];});
+        if(sequence%100==0||sequence+1==runner.steps.count){
+            NSString *doc=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+            NSDictionary *capture=@{@"sequence":@(sequence),@"red":@(red),@"green":@(green)};
+            [[NSJSONSerialization dataWithJSONObject:capture options:0 error:nil] writeToFile:[doc stringByAppendingPathComponent:@"display-frame-pending.json"] atomically:YES];
+            [runner waitForCapture:sequence deadline:[NSDate dateWithTimeIntervalSinceNow:60]];
+        }else dispatch_async(dispatch_get_main_queue(),^{[runner next];});
     };
-    [drawable addPresentedHandler:^(id<MTLDrawable> value){
-        dispatch_async(dispatch_get_main_queue(),^{presented=value.presentedTime>0;weak.presented+=presented;advance();});
-    }];
+    // The Simulator SDK excludes drawable presentation callbacks. GPU readback
+    // verifies every frame; the CI driver separately checks compositor captures.
     [command addCompletedHandler:^(id<MTLCommandBuffer> value){
         const uint8_t *bytes=pixel.contents;
         BOOL valid=value.status==MTLCommandBufferStatusCompleted&&abs((int)bytes[2]-red)<=1&&abs((int)bytes[1]-green)<=1&&bytes[0]==0&&bytes[3]==255;
         dispatch_async(dispatch_get_main_queue(),^{completed=YES;readback=valid;weak.frames++;advance();});
     }];
-    [command presentDrawable:drawable];[command commit];
+    [command presentDrawable:drawable];self.submitted++;[command commit];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC),dispatch_get_main_queue(),^{
-        if(weak&&!weak.done&&weak.index==sequence)[weak finish:!completed?@"GPU command stalled":@"Drawable presentation stalled"];
+        if(weak&&!weak.done&&weak.index==sequence)[weak finish:@"GPU command stalled"];
     });
 }
 - (void)next {
