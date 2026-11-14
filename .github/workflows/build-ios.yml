@@ -1,5 +1,7 @@
 name: Build experimental iPhone runtime probe
 on:
+  push:
+    branches: [local-menu-v9]
   workflow_dispatch:
     inputs:
       target:
@@ -26,6 +28,10 @@ jobs:
   build:
     runs-on: xcode-27
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(github.event_name == 'push' && '["device","simulator"]' || format('["{0}"]', inputs.target)) }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
@@ -40,24 +46,24 @@ jobs:
         if: ${{ !inputs.rebuild_runtime }}
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_ID: ${{ inputs.runtime_artifact_id || (inputs.target != 'device' && '13966426161' || '13964452376') }}
+          ARTIFACT_ID: ${{ inputs.runtime_artifact_id || (matrix.target != 'device' && '13966426161' || '13964452376') }}
         run: |
           mkdir -p build
           [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > build/verified-runtime.zip
       - name: Build and verify native app
         env:
-          PROBE_SDK: ${{ inputs.target != 'device' && 'iphonesimulator' || 'iphoneos' }}
-          PROBE_DEVICE_CLASS: ${{ inputs.target == 'simulator-standard' && 'standard' || 'duo' }}
+          PROBE_SDK: ${{ matrix.target != 'device' && 'iphonesimulator' || 'iphoneos' }}
+          PROBE_DEVICE_CLASS: ${{ matrix.target == 'simulator-standard' && 'standard' || 'duo' }}
           PROBE_RUNTIME_ARCHIVE: build/verified-runtime.zip
           PROBE_REBUILD_RUNTIME: ${{ inputs.rebuild_runtime }}
-          PROBE_RUNTIME_SHA256: ${{ inputs.runtime_artifact_id && inputs.runtime_sha256 || (inputs.target != 'device' && '58357350c28b463045bc906f237ae45abab6a6df2e23de05f9eb197aaa5176d8' || '5d538fb3067f11ee5df0c4e85921de8ec24733c46813eae008604bda99b1f27a') }}
+          PROBE_RUNTIME_SHA256: ${{ inputs.runtime_artifact_id && inputs.runtime_sha256 || (matrix.target != 'device' && '58357350c28b463045bc906f237ae45abab6a6df2e23de05f9eb197aaa5176d8' || '5d538fb3067f11ee5df0c4e85921de8ec24733c46813eae008604bda99b1f27a') }}
         run: bash scripts/build.sh
       - name: Retain build results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: iphone-runtime-probe-experiment
+          name: iphone-runtime-probe-${{ matrix.target }}
           retention-days: 7
           path: |
             build/RuntimeProbe.ipa
