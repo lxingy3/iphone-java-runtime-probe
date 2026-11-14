@@ -122,6 +122,12 @@ static void RPCFixtureHTTP(NSURL *url, NSString *documents) {
 
 // Exercise the real overlay loaded from the dylib, with a loopback fixture service.
 // It checks touch passthrough and constrained layouts, not physical fold transitions.
+static void RPCWaitForPanel(WKWebView *web,NSInteger remaining,void (^done)(void)) {
+    [web evaluateJavaScript:@"!!document.getElementById('health') && !!document.getElementById('start') && document.getElementById('health').textContent==='世界已连接'" completionHandler:^(id value,NSError *error){
+        if((!error&&[value boolValue])||remaining<=0){done();return;}
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{RPCWaitForPanel(web,remaining-1,done);});
+    }];
+}
 static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
     RPCDisplayFixture(documents,gameWindow);
     NSString *storage=[documents stringByAppendingPathComponent:@"PlaySupportFixture"];
@@ -300,6 +306,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
                     UIViewController *panel=nav.topViewController;WKWebView *web=[panel valueForKey:@"web"];
                     checks[@"training_pinch_and_browser_navigation_disabled"]=@(!web.scrollView.pinchGestureRecognizer.enabled&&!web.scrollView.bouncesZoom&&!web.allowsBackForwardNavigationGestures&&web.scrollView.zoomScale==1);
                     checks[@"training_takes_keyboard_focus"]=@(overlay.isKeyWindow);
+                    RPCWaitForPanel(web,30,^{
                     [web evaluateJavaScript:@"JSON.stringify({ready:document.getElementById('health').textContent,start:document.getElementById('start').disabled,bosses:document.querySelectorAll('.boss').length,overflow:document.documentElement.scrollWidth>window.innerWidth,singleSurface:document.documentElement.classList.contains('native-host')&&!document.documentElement.classList.contains('native-glass'),viewport:{width:innerWidth,height:innerHeight,visualWidth:visualViewport.width,scale:visualViewport.scale},panels:Array.from(document.querySelectorAll('[data-glass]')).filter(e=>e.getClientRects().length).map(e=>({id:e.dataset.glass,x:e.getBoundingClientRect().x,y:e.getBoundingClientRect().y,width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height}))})" completionHandler:^(id value,NSError *error){
                         NSDictionary *render=[value isKindOfClass:NSString.class]?[NSJSONSerialization JSONObjectWithData:[value dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil]:nil;
                         checks[@"training_loaded_authenticated_status"]=@(!error && [render[@"ready"] isEqual:@"世界已连接"] && ![render[@"start"] boolValue] && [render[@"bosses"] intValue]==2 && ![render[@"overflow"] boolValue]);
@@ -312,10 +319,11 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
                             checks[@"training_action_closes_and_restores_game_focus"]=@([controller presentedViewController]==nil && gameWindow.isKeyWindow && !overlay.isKeyWindow);
                             BOOL passed=YES;for(NSNumber *v in checks.allValues)passed &= v.boolValue;
-                            NSDictionary *report=@{@"passed":@(passed),@"checks":checks,@"layouts":layouts,@"pageDiagnostics":[panel valueForKey:@"diagnostics"]?:@{},@"render":render?:@{},@"javascriptError":error.localizedDescription?:@"",@"physical_fold_verified":@NO,@"actual_game_tested":@NO};
+                            NSDictionary *report=@{@"passed":@(passed),@"checks":checks,@"layouts":layouts,@"pageDiagnostics":[panel valueForKey:@"diagnostics"]?:@{},@"render":render?:@{},@"javascriptError":error.localizedDescription?:@"",@"javascriptDetails":[error.userInfo description]?:@"",@"physical_fold_verified":@NO,@"actual_game_tested":@NO};
                             [[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil] writeToFile:[documents stringByAppendingPathComponent:@"play-support-fixture.json"] atomically:YES];
                         });
                     }];
+                    });
                 });
             }
         });
