@@ -201,8 +201,12 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         [controller setValue:@{@"ready":@YES,@"worldReady":@YES,@"gameplayVisible":@NO,@"dps":lab} forKey:@"service"];
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         BOOL menuHidesAll=YES;
-        for(NSString *key in @[@"button",@"trainingInteraction",@"trainingReport",@"trainingChart",@"trainingDetails",@"trainingPanel"])menuHidesAll&=[[controller valueForKey:key] isHidden];
+        for(NSString *key in @[@"trainingInteraction",@"trainingReport",@"trainingChart",@"trainingDetails",@"trainingPanel"])menuHidesAll&=[[controller valueForKey:key] isHidden];
         checks[@"game_menu_hides_training_hud_and_touch_targets"]=@(menuHidesAll&&![[controller valueForKey:@"messageVisible"] boolValue]);
+        setMinimapVisible(controller,fixtureMinimap,NO);
+        checks[@"launcher_is_invisible_and_hittable_in_game_menu"]=@(symbol.hidden&&!button.hidden&&
+            [button hitTest:CGPointMake(CGRectGetMidX(button.bounds),CGRectGetMidY(button.bounds)) withEvent:nil]==button);
+        setMinimapVisible(controller,fixtureMinimap,YES);
         [controller setValue:@{@"ready":@YES,@"worldReady":@YES,@"gameplayVisible":@YES,@"dps":lab} forKey:@"service"];
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         checks[@"closing_game_menu_restores_training_hud"]=@(![[controller valueForKey:@"trainingReport"] isHidden]&&!interaction.hidden);
