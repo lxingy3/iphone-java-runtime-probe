@@ -24,6 +24,7 @@ static int RPDirectoriesMatch(const char *left, const char *right) {
 extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
 extern NSDictionary *RPHostSnapshot(void);
 
+#import "DisplayCompatibilityFixture.h"
 // Simulator fixture only: exercise a real synchronous native fault through the
 // installed JVM handler, then the host's preinstalled recovery handler. These
 // handlers are never compiled into the production embedding libraries.
@@ -122,6 +123,7 @@ static void RPCFixtureHTTP(NSURL *url, NSString *documents) {
 // Exercise the real overlay loaded from the dylib, with a loopback fixture service.
 // It checks touch passthrough and constrained layouts, not physical fold transitions.
 static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
+    RPCDisplayFixture(documents,gameWindow);
     NSString *storage=[documents stringByAppendingPathComponent:@"PlaySupportFixture"];
     NSString *server=[storage stringByAppendingPathComponent:@"server"];
     [NSFileManager.defaultManager createDirectoryAtPath:server withIntermediateDirectories:YES attributes:nil error:nil];
@@ -220,7 +222,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
             ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("alignHUDToView:"),source);
             BOOL fit=CGRectContainsRect(root.bounds,button.frame)&&CGRectContainsRect(root.bounds,interaction.frame)&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingChart"] frame])&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingPanel"] frame]);within &= fit;
             NSArray<NSValue *> *regions=((id(*)(id,SEL))objc_msgSend)(root,sel_registerName("contentRegions"));CGRect pane=regions.firstObject.CGRectValue;
-            minimapAnchored &= button.frame.size.width==44&&button.frame.size.height==44&&CGRectGetMinX(button.frame)>pane.origin.x+30&&fabs(CGRectGetMinY(button.frame)-pane.origin.y-8)<.5&&!CGRectIntersectsRect(button.frame,dpsLabel.frame);
+            minimapAnchored &= button.frame.size.width==44&&button.frame.size.height==44&&CGRectGetMinX(button.frame)>pane.origin.x+90&&CGRectGetMinY(button.frame)>pane.origin.y+80&&!CGRectIntersectsRect(button.frame,dpsLabel.frame);
             [layouts addObject:@{@"width":@(sizes[i].width),@"height":@(sizes[i].height),@"buttonFits":@(fit),@"button":NSStringFromCGRect(button.frame),@"pane":NSStringFromCGRect(pane),@"banner":NSStringFromCGRect(dpsLabel.frame)}];
         }
         BOOL cornersMatch=YES,reportClear=YES;
@@ -237,7 +239,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         checks[@"report_icon_avoids_health_bar_and_attack_controls"]=@(reportClear);
         [source removeFromSuperview];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("syncGameGeometry"));
         checks[@"compact_and_expanded_layouts"]=@(within);
-        checks[@"launcher_beside_minimap_in_all_sizes"]=@(minimapAnchored);
+        checks[@"launcher_lower_right_of_minimap_in_all_sizes"]=@(minimapAnchored);
         Class adaptive=NSClassFromString(@"RPSAdaptiveView");SEL regionSelector=sel_registerName("regionsForBounds:divisions:occlusions:");
         BOOL regionsFit=adaptive!=nil;
         CGRect screen=CGRectMake(0,0,1000,700),folds[]={CGRectMake(490,0,20,700),CGRectMake(0,340,1000,20)};
@@ -474,6 +476,7 @@ int main(int argc,char **argv) { @autoreleasepool { return UIApplicationMain(arg
 extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
 extern NSDictionary *RPHostSnapshot(void);
 extern void RPHostSceneEvent(NSString *);
+#import "NativeDisplayCompatibility.h"
 #import "NativePlaySupport.h"
 
 static NSString *RPCReportDirectory;
@@ -861,6 +864,7 @@ __attribute__((constructor)) static void RPCInitialize(void) {
             !([bundle isEqualToString:expected] || [bundle hasPrefix:[expected stringByAppendingString:@"."]])) return;
         if (![[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] isEqual:RPCConfiguration[@"ClientVersion"]] ||
             ![[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] isEqual:RPCConfiguration[@"ClientBuild"]]) return;
+        [RPSDisplayCompatibility install];
         NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
         RPCReportDirectory = [documents stringByAppendingPathComponent:@"RuntimeIntegration"];
         [NSFileManager.defaultManager createDirectoryAtPath:RPCReportDirectory withIntermediateDirectories:YES attributes:nil error:nil];

@@ -39,7 +39,9 @@ static NSArray<NSValue *> *RPSRegions(CGRect bounds,NSArray<NSValue *> *division
         for(UIViewReservedRegion *region in [self reservedRegionsOfKind:UIViewReservedRegionKind.divisionRegionKind])[divisions addObject:[NSValue valueWithCGRect:region.frame]];
         for(UIViewReservedRegion *region in [self reservedRegionsOfKind:UIViewReservedRegionKind.occlusionRegionKind])[occlusions addObject:[NSValue valueWithCGRect:region.frame]];
     }
-    return RPSRegions(UIEdgeInsetsInsetRect(self.bounds,self.safeAreaInsets),divisions,occlusions);
+    UIEdgeInsets inset=self.safeAreaInsets;
+    inset=UIEdgeInsetsMake(MAX(18,inset.top),MAX(18,inset.left),MAX(18,inset.bottom),MAX(18,inset.right));
+    return RPSRegions(UIEdgeInsetsInsetRect(self.bounds,inset),divisions,occlusions);
 }
 - (void)updateConstraints {
     // Reading here lets UIKit invalidate this pass when a reserved region changes.
@@ -405,12 +407,16 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 }
 - (void)syncGameGeometry {
     if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive||!self.gameSurface)return;
+    [RPSDisplayCompatibility applyComfortInsetsToSurface:self.gameSurface];
     [self alignHUDToView:self.gameSurface];
-    NSString *signature=[NSString stringWithFormat:@"%@|%@|%@|%@|%@",NSStringFromCGRect(self.overlay.windowScene.coordinateSpace.bounds),NSStringFromCGRect(self.gameWindow.bounds),NSStringFromCGRect(self.gameSurface.bounds),NSStringFromCGAffineTransform(self.hud.transform),NSStringFromCGPoint(self.hud.center)];
+    NSString *signature=[NSString stringWithFormat:@"%@|%@|%@|%@|%@|%@",NSStringFromCGRect(self.overlay.windowScene.coordinateSpace.bounds),NSStringFromCGRect(self.gameWindow.bounds),NSStringFromCGRect(self.gameSurface.bounds),NSStringFromCGAffineTransform(self.hud.transform),NSStringFromCGPoint(self.hud.center),NSStringFromUIEdgeInsets(self.gameSurface.safeAreaInsets)];
     if(![signature isEqual:self.geometrySignature]&&self.storage){
         self.geometrySignature=signature;
-        NSDictionary *state=@{@"at":@([NSDate.date timeIntervalSince1970]),@"sceneBounds":NSStringFromCGRect(self.overlay.windowScene.coordinateSpace.bounds),@"gameWindowBounds":NSStringFromCGRect(self.gameWindow.bounds),@"gameSurfaceBounds":NSStringFromCGRect(self.gameSurface.bounds),@"surfaceClass":NSStringFromClass(self.gameSurface.class),@"hudBounds":NSStringFromCGRect(self.hud.bounds),@"hudTransform":NSStringFromCGAffineTransform(self.hud.transform),@"hudCenter":NSStringFromCGPoint(self.hud.center),@"sdkCompatibilityCandidate":@YES};
-        [[NSJSONSerialization dataWithJSONObject:state options:NSJSONWritingPrettyPrinted error:nil] writeToFile:[self.storage stringByAppendingPathComponent:@"viewport-state.json"] atomically:YES];
+        [self layoutHUD];
+        NSDictionary *state=@{@"at":@([NSDate.date timeIntervalSince1970]),@"pid":@(getpid()),@"sceneBounds":NSStringFromCGRect(self.overlay.windowScene.coordinateSpace.bounds),@"gameWindowBounds":NSStringFromCGRect(self.gameWindow.bounds),@"gameSurfaceBounds":NSStringFromCGRect(self.gameSurface.bounds),@"surfaceClass":NSStringFromClass(self.gameSurface.class),@"hudBounds":NSStringFromCGRect(self.hud.bounds),@"hudTransform":NSStringFromCGAffineTransform(self.hud.transform),@"hudCenter":NSStringFromCGPoint(self.hud.center),@"gameSafeInsets":NSStringFromUIEdgeInsets(self.gameSurface.safeAreaInsets),@"displayCompatibility":[RPSDisplayCompatibility snapshot],@"sdkCompatibilityCandidate":@YES};
+        NSString *path=[self.storage stringByAppendingPathComponent:@"viewport-state.json"];
+        static dispatch_queue_t geometryQueue;static dispatch_once_t once;dispatch_once(&once,^{geometryQueue=dispatch_queue_create("local.runtime.geometry",DISPATCH_QUEUE_SERIAL);});
+        dispatch_async(geometryQueue,^{[[NSJSONSerialization dataWithJSONObject:state options:NSJSONWritingPrettyPrinted error:nil] writeToFile:path atomically:YES];});
     }
 }
 - (void)start:(NSString *)storage {
@@ -531,7 +537,8 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 }
 - (void)layoutHUD {
     NSArray<NSValue *> *regions=[self.hud contentRegions];CGRect area=regions.firstObject.CGRectValue,controls=regions.lastObject.CGRectValue;
-    self.button.frame=CGRectMake(area.origin.x+MIN(138,MAX(0,area.size.width*.18)),area.origin.y+8,MIN(44,area.size.width),44);
+    CGFloat minimapDiameter=MIN(142,MAX(112,area.size.height*.22));
+    self.button.frame=CGRectMake(MIN(CGRectGetMaxX(area)-44,area.origin.x+minimapDiameter-10),MIN(CGRectGetMaxY(area)-44,area.origin.y+minimapDiameter-18),MIN(44,area.size.width),44);
     CGFloat messageLimit=MIN(390,MAX(44,area.size.width-24));CGSize messageSize=[self.message sizeThatFits:CGSizeMake(messageLimit-24,CGFLOAT_MAX)];
     CGFloat messageWidth=MIN(messageLimit,MAX(120,messageSize.width+24));
     self.message.frame=CGRectMake(CGRectGetMidX(area)-messageWidth/2,area.origin.y+8,messageWidth,MIN(90,MAX(30,messageSize.height+12)));
