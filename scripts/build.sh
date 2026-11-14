@@ -886,6 +886,21 @@ for fixture_path in "$fixture" "$project_root/build/ObserverFixtureWrong.app" "$
   codesign --force --sign - "$fixture_path/Frameworks/RuntimeClientProbe.dylib"
   codesign --force --sign - "$fixture_path"
 done
+cat > build/CheckDisplayFrame.swift <<'SWIFT'
+import AppKit
+import Foundation
+guard CommandLine.arguments.count == 4,
+      let bitmap = NSBitmapImageRep(contentsOfFile: CommandLine.arguments[1]),
+      let color = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.sRGB),
+      let expectedRed = Int(CommandLine.arguments[2]),
+      let expectedGreen = Int(CommandLine.arguments[3]) else { exit(2) }
+let rgb = [color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }
+let passed = abs(rgb[0] - expectedRed) <= 4 && abs(rgb[1] - expectedGreen) <= 4 && rgb[2] <= 4
+let data = try JSONSerialization.data(withJSONObject: ["passed": passed, "rgb": rgb, "size": [bitmap.pixelsWide, bitmap.pixelsHigh]])
+print(String(data: data, encoding: .utf8)!)
+exit(passed ? 0 : 1)
+SWIFT
+xcrun --sdk macosx swiftc build/CheckDisplayFrame.swift -o build/check-display-frame
 python3 - <<'PY'
 import http.server,json,os,pathlib,re,shutil,signal,subprocess,threading,time
 output=pathlib.Path('build/simulator-results');output.mkdir(parents=True,exist_ok=True)
@@ -998,17 +1013,36 @@ try:
     geometry['compatibilityGateObserved']=geometry['logicalAreaGain']>1.1
     geometry['actualGameTested']=False
     (output/'duo-sdk-compatibility.json').write_text(json.dumps(geometry,indent=2))
-    # Real GPU readback/presentation across synthetic state transitions. This
+    # Real GPU readback and compositor captures across synthetic transitions. This
     # exercises our binding bridge; physical folding and the game stay unverified.
     transition_bundle='local.astaps.DuoGeometryModern'
     transition_container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,transition_bundle,'data').stdout.strip())
     transition_report=transition_container/'Documents/display-transition-fixture.json'
+    pending_frame=transition_container/'Documents/display-frame-pending.json'
+    frame_ack=transition_container/'Documents/display-frame-ack'
     for label,flags in [('baseline',['--baseline-display-binding']),('candidate',[])]:
-        if transition_report.is_file(): transition_report.unlink()
+        for stale in [transition_report,pending_frame,frame_ack]:
+            if stale.is_file():stale.unlink()
+        captures=[];captured_sequences=set()
         command('xcrun','simctl','launch',udid,transition_bundle,'--display-transitions',*flags)
-        for _ in range(120):
+        deadline=time.monotonic()+240
+        while time.monotonic()<deadline:
             if transition_report.is_file(): break
-            time.sleep(1)
+            if pending_frame.is_file():
+                frame=json.loads(pending_frame.read_text());sequence=frame['sequence']
+                if sequence not in captured_sequences:
+                    # Allow Core Animation to commit before reading the compositor,
+                    # independently of the already completed GPU readback.
+                    time.sleep(.35)
+                    capture=output/('display-frame-'+label+'-'+str(sequence)+'.png')
+                    command('xcrun','simctl','io',udid,'screenshot',str(capture),timeout=40)
+                    checked=command('build/check-display-frame',str(capture),str(frame['red']),str(frame['green']),check=False)
+                    result_frame=dict(sequence=sequence,**json.loads(checked.stdout))
+                    captures.append(result_frame)
+                    (output/('display-captures-'+label+'.json')).write_text(json.dumps(captures,indent=2))
+                    assert checked.returncode==0,result_frame
+                    captured_sequences.add(sequence);frame_ack.write_text(str(sequence))
+            time.sleep(.2)
         transition=json.loads(transition_report.read_text()) if transition_report.is_file() else {'passed':False,'failure':'Transition fixture timed out'}
         (output/('display-transitions-'+label+'.json')).write_text(json.dumps(transition,indent=2))
         command('xcrun','simctl','terminate',udid,transition_bundle,check=False,timeout=15)
@@ -1017,7 +1051,8 @@ try:
             assert transition.get('passed') is False and any(not row['binding'] for row in transition['steps']),transition
         else:
             assert transition.get('passed') is True,transition
-            assert transition['framesReadBack']==len(transition['steps'])==transition['drawablesPresented'],transition
+            assert transition['framesReadBack']==len(transition['steps'])==transition['drawablesSubmitted'],transition
+            assert len(captures)==5 and all(row['passed'] for row in captures),captures
     for variant,arguments in [('ObserverFixture',[]),('ObserverFixtureWrong',['--expect-observer-disabled']),('ObserverFixtureEmbedded',['--probe-embedded-runtime']),('ObserverFixtureRouting',['--expect-local-routing'])]:
         bundle={'ObserverFixtureEmbedded':'local.astaps.ObserverFixture.Embedded','ObserverFixtureRouting':'local.astaps.ObserverFixture.Routing'}.get(variant,'local.astaps.'+variant)
         command('xcrun','simctl','install',udid,'build/'+variant+'.app')
