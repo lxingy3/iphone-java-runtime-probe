@@ -38,6 +38,7 @@ static void RPCDisplayFixture(NSString *documents,UIWindow *window) {
     checks[@"already_bound_display_is_idempotent"]=@(main.binds==before);
     RPFixtureDisplay *external=[RPFixtureDisplay new];external.screen=[NSObject new];
     [external createView:YES showRightAway:NO];checks[@"external_display_creation_preserved"]=@(external.externalCreates==1&&external.view!=surface);
+
     // Transitional absence must not steal another live surface or mutate UIKit
     // from the render thread. Exercise the production binding method directly.
     BOOL (^bind)(id,UIView *)=^BOOL(id display,UIView *view){
@@ -46,9 +47,14 @@ static void RPCDisplayFixture(NSString *documents,UIWindow *window) {
     NSUInteger boundCount=main.binds;
     UIView *detached=[UIView new];
     checks[@"missing_or_detached_host_leaves_binding_intact"]=@(!bind(main,nil)&&!bind(main,detached)&&main.view==surface&&main.binds==boundCount);
-    __block BOOL offMainAccepted=YES;
-    dispatch_sync(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{offMainAccepted=bind(main,surface);});
-    checks[@"render_thread_cannot_rebind_uikit_surface"]=@(!offMainAccepted&&main.binds==boundCount);
+    __block BOOL offMainAccepted=YES,usedBackgroundThread=NO;
+    dispatch_semaphore_t finished=dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+        usedBackgroundThread=!NSThread.isMainThread;offMainAccepted=bind(main,surface);
+        dispatch_semaphore_signal(finished);
+    });
+    BOOL completed=dispatch_semaphore_wait(finished,dispatch_time(DISPATCH_TIME_NOW,2*NSEC_PER_SEC))==0;
+    checks[@"render_thread_cannot_rebind_uikit_surface"]=@(completed&&usedBackgroundThread&&!offMainAccepted&&main.binds==boundCount);
     UIView *other=[UIView new];[surface addSubview:other];
     main.view=other;
     checks[@"another_attached_surface_is_not_replaced"]=@(!bind(main,surface)&&main.view==other&&main.binds==boundCount);
@@ -63,7 +69,6 @@ static void RPCDisplayFixture(NSString *documents,UIWindow *window) {
     objc_registerClassPair(invalid);
     BOOL accepted=((BOOL(*)(id,SEL,Class,id))objc_msgSend)(compatibility,sel_registerName("installForDisplayClass:surfaceProvider:"),invalid,^UIView *{return surface;});
     checks[@"incompatible_signature_is_rejected_without_swizzle"]=@(!accepted&&wrong==class_getMethodImplementation(invalid,sel_registerName("createView:showRightAway:")));
-
     surface.bounds=originalBounds;
     checks[@"game_button_insets_preserved"]=@(UIEdgeInsetsEqualToEdgeInsets(originalInsets,window.rootViewController.additionalSafeAreaInsets));
     checks[@"camera_surface_keeps_full_bounds"]=@(CGRectEqualToRect(originalBounds,surface.bounds));
