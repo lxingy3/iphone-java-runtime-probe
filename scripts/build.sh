@@ -945,7 +945,7 @@ class RoutingMock(http.server.BaseHTTPRequestHandler):
     def log_message(self,*args): pass
     def do_GET(self):
         passed=self.path in ['/local/manage/status','/local/manage/training','/local/manage/training-interaction'] and self.headers.get('X-Local-Maintenance')=='FIXTURE_MAINTENANCE'
-        state={'retcode':0,'ready':passed,'fullSaveAt':'2026-11-12T12:00:00Z'}
+        state={'retcode':0,'ready':passed,'worldReady':passed,'fullSaveAt':'2026-11-12T12:00:00Z'}
         if self.path.endswith('/training-interaction'):state['interaction']={'inArena':True,'station':{'label':'元素设置','section':'elements'}}
         if self.path.endswith('/training'):state.update(online=True,bosses=[{'id':1,'name':'测试目标甲','available':True,'note':'选择'},{'id':2,'name':'测试目标乙','available':False,'note':'未开放'}],results=[],dps={'active':False})
         data=json.dumps(state).encode()
