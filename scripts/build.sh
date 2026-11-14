@@ -886,22 +886,6 @@ for fixture_path in "$fixture" "$project_root/build/ObserverFixtureWrong.app" "$
   codesign --force --sign - "$fixture_path/Frameworks/RuntimeClientProbe.dylib"
   codesign --force --sign - "$fixture_path"
 done
-cat > build/CheckDisplayFrame.swift <<'SWIFT'
-import AppKit
-import Foundation
-guard CommandLine.arguments.count == 4,
-      let imageData = try? Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])),
-      let bitmap = NSBitmapImageRep(data: imageData),
-      let color = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.sRGB),
-      let expectedRed = Int(CommandLine.arguments[2]),
-      let expectedGreen = Int(CommandLine.arguments[3]) else { exit(2) }
-let rgb = [color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }
-let passed = abs(rgb[0] - expectedRed) <= 4 && abs(rgb[1] - expectedGreen) <= 4 && rgb[2] <= 4
-let data = try JSONSerialization.data(withJSONObject: ["passed": passed, "rgb": rgb, "size": [bitmap.pixelsWide, bitmap.pixelsHigh]])
-print(String(data: data, encoding: .utf8)!)
-exit(passed ? 0 : 1)
-SWIFT
-xcrun --sdk macosx swiftc build/CheckDisplayFrame.swift -o build/check-display-frame
 python3 - <<'PY'
 import http.server,json,os,pathlib,re,shutil,signal,subprocess,threading,time
 output=pathlib.Path('build/simulator-results');output.mkdir(parents=True,exist_ok=True)
@@ -1042,7 +1026,7 @@ try:
                     for display in (['1','3'] if profile=='duo' else [None]):
                         capture=output/('display-frame-'+label+'-'+str(sequence)+'-'+str(display)+'.png')
                         command('xcrun','simctl','io',udid,'screenshot',*(['--display='+display] if display else []),str(capture),timeout=40)
-                        checked=command('build/check-display-frame',str(capture),str(frame['red']),str(frame['green']),check=False)
+                        checked=command('python3','scripts/check_display_frame.py',str(capture),str(frame['red']),str(frame['green']),check=False)
                         observation=dict(sequence=sequence,display=display,**json.loads(checked.stdout));attempts.append(observation)
                         if checked.returncode==0:result_frame=observation;break
                     assert result_frame,attempts
