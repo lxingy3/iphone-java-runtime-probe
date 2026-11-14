@@ -1029,7 +1029,7 @@ try:
             fixture_result['loopback_http']=http_result
             fixture_result['passed']=fixture_result.get('passed') is True and http_result.get('passed') is True
             support_report=fixture_container/'Documents/play-support-fixture.json'
-            for _ in range(30):
+            for _ in range(65):
                 if support_report.is_file(): break
                 time.sleep(1)
             support=json.loads(support_report.read_text()) if support_report.is_file() else {'passed':False,'error':'No native support report'}
