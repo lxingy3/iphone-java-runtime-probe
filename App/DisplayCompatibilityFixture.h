@@ -38,6 +38,32 @@ static void RPCDisplayFixture(NSString *documents,UIWindow *window) {
     checks[@"already_bound_display_is_idempotent"]=@(main.binds==before);
     RPFixtureDisplay *external=[RPFixtureDisplay new];external.screen=[NSObject new];
     [external createView:YES showRightAway:NO];checks[@"external_display_creation_preserved"]=@(external.externalCreates==1&&external.view!=surface);
+    // Transitional absence must not steal another live surface or mutate UIKit
+    // from the render thread. Exercise the production binding method directly.
+    BOOL (^bind)(id,UIView *)=^BOOL(id display,UIView *view){
+        return ((BOOL(*)(id,SEL,id,id))objc_msgSend)(compatibility,sel_registerName("bindPrimaryDisplay:surface:"),display,view);
+    };
+    NSUInteger boundCount=main.binds;
+    UIView *detached=[UIView new];
+    checks[@"missing_or_detached_host_leaves_binding_intact"]=@(!bind(main,nil)&&!bind(main,detached)&&main.view==surface&&main.binds==boundCount);
+    __block BOOL offMainAccepted=YES;
+    dispatch_sync(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{offMainAccepted=bind(main,surface);});
+    checks[@"render_thread_cannot_rebind_uikit_surface"]=@(!offMainAccepted&&main.binds==boundCount);
+    UIView *other=[UIView new];[surface addSubview:other];
+    main.view=other;
+    checks[@"another_attached_surface_is_not_replaced"]=@(!bind(main,surface)&&main.view==other&&main.binds==boundCount);
+    [other removeFromSuperview];
+    checks[@"retired_surface_can_be_replaced"]=@(bind(main,surface)&&main.view==surface&&main.binds==boundCount+1);
+    IMP wrapper=class_getMethodImplementation(RPFixtureDisplay.class,sel_registerName("createView:showRightAway:"));
+    BOOL installedAgain=((BOOL(*)(id,SEL,Class,id))objc_msgSend)(compatibility,sel_registerName("installForDisplayClass:surfaceProvider:"),RPFixtureDisplay.class,^UIView *{return surface;});
+    checks[@"duplicate_install_preserves_one_wrapper"]=@(installedAgain&&wrapper==class_getMethodImplementation(RPFixtureDisplay.class,sel_registerName("createView:showRightAway:")));
+    Class invalid=objc_allocateClassPair(NSObject.class,"RPFixtureIncompatibleDisplay",0);
+    IMP wrong=imp_implementationWithBlock(^int(id receiver,BOOL render,BOOL show){return 0;});
+    class_addMethod(invalid,sel_registerName("createView:showRightAway:"),wrong,"i@:BB");
+    objc_registerClassPair(invalid);
+    BOOL accepted=((BOOL(*)(id,SEL,Class,id))objc_msgSend)(compatibility,sel_registerName("installForDisplayClass:surfaceProvider:"),invalid,^UIView *{return surface;});
+    checks[@"incompatible_signature_is_rejected_without_swizzle"]=@(!accepted&&wrong==class_getMethodImplementation(invalid,sel_registerName("createView:showRightAway:")));
+
     surface.bounds=originalBounds;
     checks[@"game_button_insets_preserved"]=@(UIEdgeInsetsEqualToEdgeInsets(originalInsets,window.rootViewController.additionalSafeAreaInsets));
     checks[@"camera_surface_keeps_full_bounds"]=@(CGRectEqualToRect(originalBounds,surface.bounds));
