@@ -16,14 +16,19 @@ static UIView *RPSUnitySurfaceIn(UIView *view) {
 static UIView *RPSCurrentGameSurface(void) {
     if(!NSThread.isMainThread)return nil;
     id direct=RPSGetObject(UIApplication.sharedApplication.delegate,@"unityView");
-    if([direct isKindOfClass:UIView.class]&&[(UIView *)direct window])return direct;
+    UIView *delegateSurface=[direct isKindOfClass:UIView.class]?direct:nil;
+    if(delegateSurface.window.windowScene&&delegateSurface.window.windowScene.activationState==UISceneActivationStateForegroundActive &&
+       !delegateSurface.window.hidden)return delegateSurface;
     for(UIScene *scene in UIApplication.sharedApplication.connectedScenes){
-        if(![scene isKindOfClass:UIWindowScene.class])continue;
+        if(![scene isKindOfClass:UIWindowScene.class]||scene.activationState!=UISceneActivationStateForegroundActive)continue;
         for(UIWindow *window in ((UIWindowScene *)scene).windows){
             if(window.hidden||window.windowLevel!=UIWindowLevelNormal)continue;
             UIView *view=RPSUnitySurfaceIn(window.rootViewController.view);if(view)return view;
         }
-    }return nil;
+    }
+    // During a scene's activation transition UIKit can temporarily have no
+    // foreground-active scene. Only the engine's own attached view is eligible.
+    return delegateSurface.window&&!delegateSurface.window.hidden?delegateSurface:nil;
 }
 static BOOL RPSMethodMatches(Class cls,NSString *name,const char *result,NSArray<NSString *> *arguments) {
     Method method=class_getInstanceMethod(cls,NSSelectorFromString(name));if(!method||method_getNumberOfArguments(method)!=arguments.count+2)return NO;
@@ -45,7 +50,12 @@ static BOOL RPSDisplayInstalled,RPSLookupInstalled;
     UIWindow *window=surface.window;
     if(RPSGetObject(display,@"screen")!=window.windowScene.screen)return NO;
     UIView *bound=RPSGetObject(display,@"view");
-    if(bound&&bound!=surface)return NO;
+    if(bound&&bound!=surface){
+        UIWindow *oldWindow=bound.window;
+        BOOL retired=!oldWindow||oldWindow.hidden||
+            (oldWindow!=window&&oldWindow.windowScene.activationState!=UISceneActivationStateForegroundActive);
+        if(!retired)return NO;
+    }
     if(bound!=surface||RPSGetObject(display,@"window")!=window){
         ((void(*)(id,SEL,id,id))objc_msgSend)(display,NSSelectorFromString(@"createWithWindow:andView:"),window,surface);
         RPSDisplayRepairs++;
