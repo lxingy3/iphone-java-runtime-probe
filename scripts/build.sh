@@ -890,7 +890,8 @@ cat > build/CheckDisplayFrame.swift <<'SWIFT'
 import AppKit
 import Foundation
 guard CommandLine.arguments.count == 4,
-      let bitmap = NSBitmapImageRep(contentsOfFile: CommandLine.arguments[1]),
+      let imageData = try? Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])),
+      let bitmap = NSBitmapImageRep(data: imageData),
       let color = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.sRGB),
       let expectedRed = Int(CommandLine.arguments[2]),
       let expectedGreen = Int(CommandLine.arguments[3]) else { exit(2) }
