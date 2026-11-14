@@ -793,7 +793,7 @@ if [[ "$sdk_name" == iphonesimulator ]]; then
 # Isolate the linked-SDK compatibility gate using the same scene/fullscreen/
 # landscape contract as the game. Only the SDK load-command field differs.
 mkdir -p build/DuoGeometryLegacy.app build/DuoGeometryModern.app
-xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" -fobjc-arc -fmodules App/DuoGeometryFixture.m -framework UIKit -framework Foundation -o build/DuoGeometryModern.app/DuoGeometry
+xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" -fobjc-arc -fmodules App/DuoGeometryFixture.m -framework UIKit -framework Foundation -framework QuartzCore -framework Metal -o build/DuoGeometryModern.app/DuoGeometry
 python3 - <<'PY'
 import pathlib,plistlib,struct
 base=pathlib.Path('build/DuoGeometryModern.app/DuoGeometry').read_bytes()
@@ -998,6 +998,26 @@ try:
     geometry['compatibilityGateObserved']=geometry['logicalAreaGain']>1.1
     geometry['actualGameTested']=False
     (output/'duo-sdk-compatibility.json').write_text(json.dumps(geometry,indent=2))
+    # Real GPU readback/presentation across synthetic state transitions. This
+    # exercises our binding bridge; physical folding and the game stay unverified.
+    transition_bundle='local.astaps.DuoGeometryModern'
+    transition_container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,transition_bundle,'data').stdout.strip())
+    transition_report=transition_container/'Documents/display-transition-fixture.json'
+    for label,flags in [('baseline',['--baseline-display-binding']),('candidate',[])]:
+        if transition_report.is_file(): transition_report.unlink()
+        command('xcrun','simctl','launch',udid,transition_bundle,'--display-transitions',*flags)
+        for _ in range(120):
+            if transition_report.is_file(): break
+            time.sleep(1)
+        transition=json.loads(transition_report.read_text()) if transition_report.is_file() else {'passed':False,'failure':'Transition fixture timed out'}
+        (output/('display-transitions-'+label+'.json')).write_text(json.dumps(transition,indent=2))
+        command('xcrun','simctl','terminate',udid,transition_bundle,check=False,timeout=15)
+        assert not transition.get('failure'),transition
+        if label=='baseline':
+            assert transition.get('passed') is False and any(not row['binding'] for row in transition['steps']),transition
+        else:
+            assert transition.get('passed') is True,transition
+            assert transition['framesReadBack']==len(transition['steps'])==transition['drawablesPresented'],transition
     for variant,arguments in [('ObserverFixture',[]),('ObserverFixtureWrong',['--expect-observer-disabled']),('ObserverFixtureEmbedded',['--probe-embedded-runtime']),('ObserverFixtureRouting',['--expect-local-routing'])]:
         bundle={'ObserverFixtureEmbedded':'local.astaps.ObserverFixture.Embedded','ObserverFixtureRouting':'local.astaps.ObserverFixture.Routing'}.get(variant,'local.astaps.'+variant)
         command('xcrun','simctl','install',udid,'build/'+variant+'.app')
