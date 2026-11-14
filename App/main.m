@@ -180,6 +180,13 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         [controller setValue:NSDate.date forKey:@"lastResponse"];
         [controller setValue:@{@"ready":@YES,@"worldReady":@YES,@"gameplayVisible":@YES,@"dps":@{@"active":@YES,@"remainingSeconds":@42,@"hitCount":@180,@"totalDamage":@12345678,@"averageDps":@685871}} forKey:@"service"];
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        void (*setMinimapVisible)(id,SEL,BOOL)=(void(*)(id,SEL,BOOL))objc_msgSend;
+        SEL fixtureMinimap=sel_registerName("setFixtureMinimapVisible:");
+        setMinimapVisible(controller,fixtureMinimap,NO);
+        checks[@"cinematic_hides_star_and_keeps_hit_target"]=@(symbol.hidden&&!button.hidden&&button.alpha==1&&button.userInteractionEnabled&&
+            [button hitTest:CGPointMake(CGRectGetMidX(button.bounds),CGRectGetMidY(button.bounds)) withEvent:nil]==button);
+        setMinimapVisible(controller,fixtureMinimap,YES);
+        checks[@"minimap_return_reveals_star"]=@(!symbol.hidden&&!button.hidden);
         UILabel *dpsLabel=[controller valueForKey:@"message"];
         checks[@"live_dps_label"]=@(!dpsLabel.hidden && [dpsLabel.text containsString:@"42 秒"] && [dpsLabel.text containsString:@"180 次命中"]);
         [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-3.5] forKey:@"lastResponse"];

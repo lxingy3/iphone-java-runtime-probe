@@ -1,6 +1,7 @@
 // Small host controls for a self-contained local runtime. No account credentials or external services.
 #import <WebKit/WebKit.h>
 #import <CoreText/CoreText.h>
+#import "NativeMinimapVisibility.h"
 
 // UIKit reports these frames in this view's coordinates, including their margins.
 // Keep related controls together on one side of an active fold; never infer a
@@ -419,7 +420,10 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.geometryLink=[CADisplayLink displayLinkWithTarget:self selector:@selector(syncGameGeometry)];
     self.geometryLink.preferredFrameRateRange=CAFrameRateRangeMake(10,30,30);[self.geometryLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     [NSTimer scheduledTimerWithTimeInterval:.5 repeats:YES block:^(NSTimer *timer){ [self update]; }];
-    [NSTimer scheduledTimerWithTimeInterval:.1 repeats:YES block:^(NSTimer *timer){ [self pollTrainingInteraction]; }];
+    [NSTimer scheduledTimerWithTimeInterval:.1 repeats:YES block:^(NSTimer *timer){
+        [self refreshMinimapButton];
+        [self pollTrainingInteraction];
+    }];
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil
         queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification){
             if(!self.readyAt || self.saving) return;
@@ -458,6 +462,21 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         self.overlay.hidden=NO; return;
     }
 }
+- (void)refreshMinimapButton {
+    BOOL canOpen=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<4 &&
+        [self.service[@"ready"] boolValue] && [self.service[@"worldReady"] boolValue] &&
+        UIApplication.sharedApplication.applicationState==UIApplicationStateActive &&
+        !self.presentedViewController && !self.statusMenu;
+    self.button.hidden=!canOpen;
+    // Only the symbol becomes transparent. A hidden or zero-alpha UIButton loses hit testing.
+    ((RPSMinimapButton *)self.button).symbol.hidden=!canOpen || !RPSNativeMinimapVisible();
+}
+#if TARGET_OS_SIMULATOR
+- (void)setFixtureMinimapVisible:(BOOL)visible {
+    RPSFixtureMinimapVisible=visible;
+    [self refreshMinimapButton];
+}
+#endif
 - (void)update {
     [self attach]; if(!self.overlay || UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) return;
     NSDictionary *host=RPHostSnapshot();
@@ -478,7 +497,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.button.accessibilityValue=title;
     if(![readiness isEqualToString:self.visibleStatus]){self.visibleStatus=readiness;self.statusChangedAt=NSDate.date;}
     if(healthy && !self.readyAt) self.readyAt=NSDate.date;
-    self.button.hidden=!gameplay;
+    [self refreshMinimapButton];
     if(healthy) self.message.text=@"本机 · 就绪";
     else if(failed) self.message.text=@"本机 · 启动异常";
     else self.message.text=@"本机 · 加载中";
@@ -589,7 +608,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
             self.interactionSnapshot=value;self.interactionResponseAt=NSDate.date;
             // Apply on receipt, independent of the half-second damage/save refresh.
             if(![value[@"gameplayVisible"] boolValue] || self.presentedViewController || self.statusMenu){
-                self.button.hidden=YES;[self updateTrainingHUD:nil];
+                [self updateTrainingHUD:nil];
                 if([self.service[@"worldReady"] boolValue])[self setStatusMessageVisible:NO];
             }else [self updateTrainingInteraction:value];
         });
