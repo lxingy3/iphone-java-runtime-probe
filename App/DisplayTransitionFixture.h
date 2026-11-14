@@ -121,6 +121,11 @@
         self.surface=[RPTransitionSurface new];[host addSubview:self.surface];
         CAMetalLayer *layer=(CAMetalLayer *)self.surface.layer;
         layer.device=self.device;layer.pixelFormat=MTLPixelFormatBGRA8Unorm;layer.framebufferOnly=NO;
+        // Declare the test pattern's encoding. A nil colorspace lets the P3
+        // outer display interpret the same bytes differently from the inner
+        // sRGB display, which would invalidate cross-display pixel comparison.
+        CGColorSpaceRef colorSpace=CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        layer.colorspace=colorSpace;CGColorSpaceRelease(colorSpace);
     }
     if(mode==0){self.display.view=nil;self.display.window=nil;}
     else if(mode==3){
