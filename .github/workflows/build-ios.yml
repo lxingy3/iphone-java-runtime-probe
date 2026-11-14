@@ -1,7 +1,7 @@
 name: Build experimental iPhone runtime probe
 on:
   push:
-    branches: [local-menu-v9]
+    branches: [duo-display-v10]
   workflow_dispatch:
     inputs:
       target:
