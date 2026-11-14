@@ -1027,6 +1027,10 @@ try:
             fixture_result['play_support']=support
             fixture_result['passed'] &= support.get('passed') is True
             (output/'play-support-fixture.json').write_text(json.dumps(support,indent=2))
+            display_report=fixture_container/'Documents/display-compatibility-fixture.json'
+            display=json.loads(display_report.read_text()) if display_report.is_file() else {'passed':False,'error':'Missing display fixture'}
+            (output/'display-compatibility-fixture.json').write_text(json.dumps(display,indent=2))
+            assert display.get('passed') is True, display
             support_png=fixture_container/'Documents/play-support-menu.png'
             if support_png.is_file(): shutil.copy2(support_png,output/'play-support-menu.png')
             entry_png=fixture_container/'Documents/play-support-minimap-icon.png'
