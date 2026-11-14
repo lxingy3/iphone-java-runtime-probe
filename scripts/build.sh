@@ -982,7 +982,16 @@ try:
             if evidence.exists():break
             time.sleep(1)
         geometry[label]=json.loads(evidence.read_text())
-        command('xcrun','simctl','io',udid,'screenshot','--display=3',str(output/('duo-sdk-'+label+'.png')),check=False,timeout=30)
+        # Newly booted Duo render services can time out once before the first
+        # capture. Retry that read only; do not silently accept missing evidence.
+        shot_path=output/('duo-sdk-'+label+'.png')
+        for attempt in range(3):
+            try:
+                capture=command('xcrun','simctl','io',udid,'screenshot','--display=3',str(shot_path),check=False,timeout=30)
+                if capture.returncode==0 and shot_path.is_file():break
+            except subprocess.TimeoutExpired:
+                pass
+        else:raise RuntimeError('Duo geometry screenshot failed after three attempts: '+label)
         command('xcrun','simctl','terminate',udid,bundle,check=False,timeout=15)
     geometry['modernWindowFillsDisplay']=geometry['Modern']['windowAreaFraction']>.97
     geometry['logicalAreaGain']=(geometry['Modern']['window'][0]*geometry['Modern']['window'][1])/(geometry['Legacy']['window'][0]*geometry['Legacy']['window'][1])
