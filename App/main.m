@@ -200,7 +200,8 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         checks[@"closing_game_menu_restores_training_hud"]=@(![[controller valueForKey:@"trainingReport"] isHidden]&&!interaction.hidden);
         checks[@"lab_hud_max_hit_and_chart"]=@([dpsLabel.text containsString:@"98765"]&&![[controller valueForKey:@"trainingChart"] isHidden]&&![[controller valueForKey:@"trainingPanel"] isHidden]&&![[controller valueForKey:@"trainingDetails"] isHidden]);
-        [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-4] forKey:@"lastResponse"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        // Statistics are stale after 3s; 4s is already the disconnected/loading state.
+        [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-3.5] forKey:@"lastResponse"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         checks[@"lab_stale_statistics_visible"]=@([dpsLabel.text containsString:@"正在同步"]);[controller setValue:NSDate.date forKey:@"lastResponse"];
         [controller setValue:@{@"ready":@YES,@"worldReady":@YES,@"gameplayVisible":@YES,@"dps":@{@"inArena":@YES,@"station":@{@"label":@"角色属性",@"section":@"party"}}} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         checks[@"room_station_proximity_action"]=@(!interaction.hidden&&[interaction.currentTitle isEqual:@"角色属性"]);
