@@ -4,7 +4,10 @@ import json, os, pathlib, plistlib, re, subprocess, sys, time
 OUT=pathlib.Path('build/system-displays');OUT.mkdir(parents=True,exist_ok=True)
 def command(*args,timeout=60,check=True):
     print('Running:',args,flush=True)
-    result=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+    try:result=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        def text(value):return value.decode(errors='replace') if isinstance(value,bytes) else value or ''
+        result=subprocess.CompletedProcess(args,124,text(error.stdout),text(error.stderr)+f'\nTimed out after {timeout}s')
     with (OUT/'commands.log').open('a') as log:log.write(repr(args)+'\n'+result.stdout+result.stderr+'\n')
     if check and result.returncode:raise RuntimeError(str(args)+'\n'+result.stdout+result.stderr)
     return result
@@ -45,13 +48,17 @@ try:
         global sequence
         sequence+=1;request={'sequence':sequence}
         if orientation:request['orientation']=orientation
+        expected_orientation={2:1,4:2,8:3,16:4}.get(orientation)
         write(request_path,request);start=time.monotonic();state={}
         while time.monotonic()-start<12:
             try:state=json.loads(state_path.read_text())
             except (ValueError,FileNotFoundError):time.sleep(.2);continue
-            if state.get('lastFrameSequence')==sequence and state.get('readbackValid') and time.time()-state['at']<2:break
+            geometry_ready=not expected_orientation or state.get('orientation')==expected_orientation or state.get('geometryError')
+            if state.get('lastFrameSequence')==sequence and state.get('readbackValid') and time.time()-state['at']<2 and geometry_ready:break
             time.sleep(.2)
-        row={'name':name,'sequence':sequence,'state':state,'freshFrame':state.get('lastFrameSequence')==sequence,'sameProcess':state.get('launchID')==launch_id,'captures':[]}
+        row={'name':name,'sequence':sequence,'state':state,'freshFrame':state.get('lastFrameSequence')==sequence and state.get('readbackValid') and time.time()-state.get('at',0)<2,'sameProcess':state.get('launchID')==launch_id,'captures':[],
+            'orientationRequested':expected_orientation,'orientationReached':not expected_orientation or state.get('orientation')==expected_orientation}
+        result['observations'].append(row);write(OUT/'result.json',result)
         if row['freshFrame']:
             time.sleep(.4)
             # IDs 1 and 3 are the two ports exposed in the preceding Duo run.
@@ -65,11 +72,12 @@ try:
                 else:row['captures'].append({'display':display,'passed':False,'error':capture.stderr[-500:]})
             row['compositorConfirmed']=any(c['passed'] for c in row['captures'])
         else:row['compositorConfirmed']=False
-        row['passed']=row['freshFrame'] and row['sameProcess'] and row['compositorConfirmed']
-        result['observations'].append(row);write(OUT/'result.json',result)
+        row['passed']=row['freshFrame'] and row['sameProcess'] and row['compositorConfirmed'] and row['orientationReached']
+        try:row['afterCaptureState']=json.loads(state_path.read_text())
+        except (ValueError,FileNotFoundError) as error:row['afterCaptureError']=str(error)
+        write(OUT/'result.json',result)
         print(json.dumps({k:v for k,v in row.items() if k not in ('state','captures')}),flush=True)
     observe('initial')
-    for mask in (8,16,2,4,8):observe('orientation-'+str(mask),mask)
     for repeat in range(2):
         for active in ('1','3'):
             other='3' if active=='1' else '1'
@@ -79,6 +87,7 @@ try:
             time.sleep(1);observe(f'power-{active}-only-{repeat}')
     for display in ('1','3'):command('xcrun','simctl','io',udid,'screenConfig','--display='+display,'power','on',check=False)
     observe('both-screens-restored')
+    for mask in (8,16,2,4,8):observe('orientation-'+str(mask),mask)
     states=[row['state'] for row in result['observations'] if row['freshFrame']]
     result.update(infrastructureCompleted=True,allObservedFramesPassed=all(row['passed'] for row in result['observations']),
         sceneScreenIdentities=sorted({s['screen'] for s in states}),windowSizes=sorted({tuple(s['window']) for s in states}),
