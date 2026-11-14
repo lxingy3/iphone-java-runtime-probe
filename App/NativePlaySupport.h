@@ -464,9 +464,13 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     BOOL failed=[host[@"phase"] isEqual:@"failed"];
     BOOL healthy=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<4 && [self.service[@"ready"] boolValue];
     BOOL inWorld=healthy && [self.service[@"worldReady"] boolValue];
+    BOOL gameplay=inWorld && [self.service[@"gameplayVisible"] boolValue];
+    if(self.interactionResponseAt && -self.interactionResponseAt.timeIntervalSinceNow<.4 && self.interactionSnapshot[@"gameplayVisible"])
+        gameplay=inWorld && [self.interactionSnapshot[@"gameplayVisible"] boolValue];
+    gameplay=gameplay && !self.presentedViewController && !self.statusMenu;
     NSDictionary *dps=[self.service[@"dps"] isKindOfClass:NSDictionary.class]?self.service[@"dps"]:nil;
-    BOOL testing=inWorld && [dps[@"active"] boolValue];
-    BOOL lab=inWorld && [dps[@"mode"] isEqual:@"lab"];
+    BOOL testing=gameplay && [dps[@"active"] boolValue];
+    BOOL lab=gameplay && [dps[@"mode"] isEqual:@"lab"];
     NSString *title=failed ? @"本机 · 异常" : healthy ? @"本机 · 就绪" : self.readyAt ? @"本机 · 等待响应" : @"本机 · 准备中";
     NSString *readiness=title;
     if(healthy && [self.service[@"busy"] boolValue])title=@"本机 · 保存中";
@@ -474,7 +478,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.button.accessibilityValue=title;
     if(![readiness isEqualToString:self.visibleStatus]){self.visibleStatus=readiness;self.statusChangedAt=NSDate.date;}
     if(healthy && !self.readyAt) self.readyAt=NSDate.date;
-    self.button.hidden=!inWorld;
+    self.button.hidden=!gameplay;
     if(healthy) self.message.text=@"本机 · 就绪";
     else if(failed) self.message.text=@"本机 · 启动异常";
     else self.message.text=@"本机 · 加载中";
@@ -492,7 +496,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         self.message.text=[NSString stringWithFormat:@"  %@　DPS %.0f  \n  累计 %.0f　最高一击 %.0f  ",time,[dps[@"averageDps"] doubleValue],[dps[@"totalDamage"] doubleValue],[dps[@"maxHit"] doubleValue]];
         if(-self.lastResponse.timeIntervalSinceNow>3 || [self.service[@"statisticsPending"] boolValue])self.message.text=@"  战斗统计正在同步…  ";
     }
-    [self updateTrainingHUD:inWorld?dps:nil];
+    [self updateTrainingHUD:gameplay?dps:nil];
     NSDictionary *finished=[self.service[@"lastTrainingResult"] isKindOfClass:NSDictionary.class]?self.service[@"lastTrainingResult"]:nil;
     NSString *resultId=finished[@"id"];
     if(resultId.length && ![resultId isEqualToString:self.lastResultId]){
@@ -501,7 +505,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         NSDate *at=[parser dateFromString:finished[@"at"]?:@""];
         if(at && [at compare:self.began]!=NSOrderedAscending)self.resultReceivedAt=NSDate.date;
     }
-    if(!testing && inWorld && self.resultReceivedAt && -self.resultReceivedAt.timeIntervalSinceNow<12 && ![self.service[@"hideDpsHud"] boolValue]){
+    if(!testing && gameplay && self.resultReceivedAt && -self.resultReceivedAt.timeIntervalSinceNow<12 && ![self.service[@"hideDpsHud"] boolValue]){
         showMessage=YES;
         self.message.text=[NSString stringWithFormat:@"  %@ · %@  \n  总伤害 %.0f · DPS %.0f · 在「成绩」查看占比  ",finished[@"title"]?:@"训练",finished[@"outcome"]?:@"完成",[finished[@"totalDamage"] doubleValue],[finished[@"averageDps"] doubleValue]];
     }
@@ -531,6 +535,9 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     CGFloat messageLimit=MIN(390,MAX(44,area.size.width-24));CGSize messageSize=[self.message sizeThatFits:CGSizeMake(messageLimit-24,CGFLOAT_MAX)];
     CGFloat messageWidth=MIN(messageLimit,MAX(120,messageSize.width+24));
     self.message.frame=CGRectMake(CGRectGetMidX(area)-messageWidth/2,area.origin.y+8,messageWidth,MIN(90,MAX(30,messageSize.height+12)));
+    if(!self.button.hidden && CGRectIntersectsRect(self.button.frame,self.message.frame)){
+        CGRect notice=self.message.frame;notice.origin.y=CGRectGetMaxY(self.button.frame)+6;self.message.frame=notice;
+    }
     self.statusMenu.frame=self.hud.bounds;[self.statusMenu setNeedsLayout];
     CGFloat offset=MAX(80,CGRectGetMaxY(self.message.frame)-area.origin.y+8),width=MIN(220,area.size.width*.45),left=area.origin.x+10,top=area.origin.y+offset;
     CGFloat height=MIN(90,MAX(34,(area.size.height-offset-22)/3)),next=top;
@@ -566,7 +573,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 }
 - (void)pollTrainingInteraction {
     if(self.interactionFetching||self.trainingRequest||self.presentedViewController||self.statusMenu||UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;
-    if(![self.service[@"dps"][@"inArena"] boolValue]||!self.lastResponse||-self.lastResponse.timeIntervalSinceNow>3)return;
+    if((![self.service[@"dps"][@"inArena"] boolValue]&&![self.service[@"dps"][@"mode"] length])||!self.lastResponse||-self.lastResponse.timeIntervalSinceNow>3)return;
     NSString *token=[NSString stringWithContentsOfFile:[self.storage stringByAppendingPathComponent:@"server/local-maintenance.token"] encoding:NSUTF8StringEncoding error:nil];
     if(!token.length)return;
     self.interactionFetching=YES;
@@ -580,7 +587,10 @@ static UIFont *RPSTrainingFont(CGFloat size) {
             if(!value||self.trainingRequest)return;
             self.interactionSnapshot=value;self.interactionResponseAt=NSDate.date;
             // Apply on receipt, independent of the half-second damage/save refresh.
-            [self updateTrainingInteraction:value];
+            if(![value[@"gameplayVisible"] boolValue] || self.presentedViewController || self.statusMenu){
+                self.button.hidden=YES;[self updateTrainingHUD:nil];
+                if([self.service[@"worldReady"] boolValue])[self setStatusMessageVisible:NO];
+            }else [self updateTrainingInteraction:value];
         });
     }] resume];
 }
