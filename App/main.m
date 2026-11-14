@@ -213,14 +213,16 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         [controller setValue:@{@"ready":@YES,@"worldReady":@YES,@"gameplayVisible":@YES,@"dps":lab} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         UIView *root=[controller valueForKey:@"hud"];
         UIView *source=[UIView new];[gameWindow.rootViewController.view addSubview:source];
-        NSMutableArray *layouts=[NSMutableArray new];BOOL within=YES,minimapAnchored=YES;
+        NSMutableArray *layouts=[NSMutableArray new];BOOL within=YES,minimapAnchored=YES,trainingClear=YES;
         CGSize sizes[]={{375,812},{812,375},{768,1024},{1024,768}};
         for(int i=0;i<4;i++){
             source.bounds=(CGRect){CGPointZero,sizes[i]};source.center=CGPointMake(CGRectGetMidX(gameWindow.bounds),CGRectGetMidY(gameWindow.bounds));
             ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("alignHUDToView:"),source);
             BOOL fit=CGRectContainsRect(root.bounds,button.frame)&&CGRectContainsRect(root.bounds,interaction.frame)&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingChart"] frame])&&CGRectContainsRect(root.bounds,[[controller valueForKey:@"trainingPanel"] frame]);within &= fit;
             NSArray<NSValue *> *regions=((id(*)(id,SEL))objc_msgSend)(root,sel_registerName("contentRegions"));CGRect pane=regions.firstObject.CGRectValue;
-            minimapAnchored &= button.frame.size.width==44&&button.frame.size.height==44&&CGRectGetMinX(button.frame)>pane.origin.x+30&&fabs(CGRectGetMinY(button.frame)-pane.origin.y-8)<.5&&!CGRectIntersectsRect(button.frame,dpsLabel.frame);
+            CGRect topControls=CGRectMake(pane.origin.x+100,pane.origin.y,pane.size.width-100,64);
+            minimapAnchored &= button.frame.size.width==44&&button.frame.size.height==44&&CGRectGetMinX(button.frame)>=pane.origin.x+100&&CGRectGetMinY(button.frame)>=pane.origin.y+90&&!CGRectIntersectsRect(button.frame,topControls)&&!CGRectIntersectsRect(button.frame,dpsLabel.frame);
+            for(NSString *key in @[@"trainingDetails",@"trainingChart",@"trainingPanel"]){UIView *widget=[controller valueForKey:key];trainingClear &= widget.hidden||!CGRectIntersectsRect(button.frame,widget.frame);}
             [layouts addObject:@{@"width":@(sizes[i].width),@"height":@(sizes[i].height),@"buttonFits":@(fit),@"button":NSStringFromCGRect(button.frame),@"pane":NSStringFromCGRect(pane),@"banner":NSStringFromCGRect(dpsLabel.frame)}];
         }
         BOOL cornersMatch=YES,reportClear=YES;
@@ -237,7 +239,8 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         checks[@"report_icon_avoids_health_bar_and_attack_controls"]=@(reportClear);
         [source removeFromSuperview];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("syncGameGeometry"));
         checks[@"compact_and_expanded_layouts"]=@(within);
-        checks[@"launcher_beside_minimap_in_all_sizes"]=@(minimapAnchored);
+        checks[@"launcher_at_minimap_lower_right_avoids_top_controls"]=@(minimapAnchored);
+        checks[@"launcher_does_not_cover_training_widgets"]=@(trainingClear);
         Class adaptive=NSClassFromString(@"RPSAdaptiveView");SEL regionSelector=sel_registerName("regionsForBounds:divisions:occlusions:");
         BOOL regionsFit=adaptive!=nil;
         CGRect screen=CGRectMake(0,0,1000,700),folds[]={CGRectMake(490,0,20,700),CGRectMake(0,340,1000,20)};
