@@ -16,6 +16,141 @@
 }
 - (void)createWithWindow:(UIWindow *)window andView:(UIView *)view {self.window=window;self.view=view;self.binds++;}
 @end
+
+@interface RPFixtureRegistryDisplay : NSObject
+@property(nonatomic,strong) UIScreen *screen;
+@property(nonatomic,strong) UIWindow *window;
+@property(nonatomic,strong) UIView *view;
+@property(nonatomic) void *surface;
+- (void)createWithWindow:(UIWindow *)window andView:(UIView *)view;
+@end
+@implementation RPFixtureRegistryDisplay
+- (void)createWithWindow:(UIWindow *)window andView:(UIView *)view {
+    self.window = window;
+    self.view = view;
+}
+@end
+
+@interface RPFixtureDisplayManager : NSObject {
+    NSMapTable *_displayConnection;
+}
+@property(nonatomic,strong) RPFixtureRegistryDisplay *mainDisplay;
+@property(nonatomic) NSUInteger destroyed;
+- (instancetype)initWithView:(UIView *)view screen:(UIScreen *)screen;
+- (void)registerScreen:(UIScreen *)screen;
+- (void)screenDidDisconnect:(NSNotification *)notice;
+- (void)updateDisplayListInUnity;
+- (RPFixtureRegistryDisplay *)connection:(UIScreen *)screen;
+- (NSUInteger)presentableConnections;
+@end
+@implementation RPFixtureDisplayManager
+- (instancetype)initWithView:(UIView *)view screen:(UIScreen *)screen {
+    if ((self = [super init])) {
+        _displayConnection = [NSMapTable strongToStrongObjectsMapTable];
+        _mainDisplay = [RPFixtureRegistryDisplay new];
+        _mainDisplay.screen = screen;
+        [_mainDisplay createWithWindow:view.window andView:view];
+        static char renderedSurface;
+        _mainDisplay.surface = &renderedSurface;
+        [_displayConnection setObject:_mainDisplay forKey:screen];
+    }
+    return self;
+}
+- (void)registerScreen:(UIScreen *)screen {
+    RPFixtureRegistryDisplay *display = [RPFixtureRegistryDisplay new];
+    display.screen = screen;
+    [_displayConnection setObject:display forKey:screen];
+}
+- (void)screenDidDisconnect:(NSNotification *)notice {
+    RPFixtureRegistryDisplay *display = [_displayConnection objectForKey:notice.object];
+    if (display.surface) {
+        display.surface = NULL;
+        self.destroyed++;
+    }
+    [_displayConnection removeObjectForKey:notice.object];
+    [self updateDisplayListInUnity];
+}
+- (void)updateDisplayListInUnity {}
+- (RPFixtureRegistryDisplay *)connection:(UIScreen *)screen { return [_displayConnection objectForKey:screen]; }
+- (NSUInteger)presentableConnections {
+    NSUInteger count = 0;
+    for (RPFixtureRegistryDisplay *display in _displayConnection.objectEnumerator) if (display.surface) count++;
+    return count;
+}
+@end
+
+static void RPCDisplayRegistryFixture(NSMutableDictionary *checks, UIView *view, Class compatibility) {
+    UIScreen *first = (UIScreen *)[NSObject new];
+    UIScreen *second = (UIScreen *)[NSObject new];
+    UIScreen *external = (UIScreen *)[NSObject new];
+    NSNotification *firstOff = [NSNotification notificationWithName:@"FixtureDisconnect" object:first];
+    NSNotification *secondOff = [NSNotification notificationWithName:@"FixtureDisconnect" object:second];
+    RPFixtureDisplayManager *baseline = [[RPFixtureDisplayManager alloc] initWithView:view screen:first];
+    [baseline registerScreen:second];
+    [baseline screenDidDisconnect:firstOff];
+    checks[@"baseline_registry_disconnect_stops_presenting"] = @(baseline.destroyed == 1 && [baseline presentableConnections] == 0);
+
+    __block UIScreen *activeScreen = first;
+    __weak UIView *activeView = view;
+    SEL install = sel_registerName("installRegistryForManagerClass:displayClass:viewProvider:screenProvider:");
+    BOOL installed = ((BOOL (*)(id, SEL, Class, Class, id, id))objc_msgSend)(compatibility, install,
+        RPFixtureDisplayManager.class, RPFixtureRegistryDisplay.class,
+        ^UIView *{ return activeView; }, ^id(UIWindow *window){ return activeScreen; });
+    checks[@"registry_hooks_match_display_abi"] = @(installed);
+
+    RPFixtureDisplayManager *manager = [[RPFixtureDisplayManager alloc] initWithView:view screen:first];
+    RPFixtureRegistryDisplay *primary = manager.mainDisplay;
+    void *drawing = primary.surface;
+    [manager registerScreen:first];
+    checks[@"duplicate_primary_registration_preserves_surface"] = @([manager connection:first] == primary && [manager presentableConnections] == 1);
+
+    [manager registerScreen:second];
+    checks[@"waiting_for_scene_screen_keeps_rendering_old_connection"] = @([manager connection:first] == primary && [manager presentableConnections] == 1);
+    activeScreen = second;
+    [manager screenDidDisconnect:firstOff];
+    checks[@"connect_before_disconnect_transfers_original_surface"] = @(
+        [manager connection:first] == nil && [manager connection:second] == primary && primary.screen == second &&
+        primary.surface == drawing && [manager presentableConnections] == 1 && manager.destroyed == 0);
+    activeScreen = first;
+    [manager registerScreen:first];
+    [manager screenDidDisconnect:secondOff];
+    checks[@"return_and_late_disconnect_preserve_one_surface"] = @(
+        [manager connection:first] == primary && [manager connection:second] == nil &&
+        primary.surface == drawing && [manager presentableConnections] == 1 && manager.destroyed == 0);
+
+    [manager screenDidDisconnect:firstOff];
+    checks[@"disconnect_before_geometry_does_not_destroy_primary"] = @(
+        [manager connection:first] == primary && primary.surface == drawing && [manager presentableConnections] == 1);
+    activeScreen = second;
+    [manager registerScreen:second];
+    checks[@"late_geometry_moves_preserved_surface"] = @(
+        [manager connection:second] == primary && [manager connection:first] == nil &&
+        manager.mainDisplay == primary && primary.surface == drawing && [manager presentableConnections] == 1);
+
+    [manager registerScreen:external];
+    RPFixtureRegistryDisplay *other = [manager connection:external];
+    static char externalDrawing;
+    other.surface = &externalDrawing;
+    activeScreen = external;
+    [manager screenDidDisconnect:secondOff];
+    checks[@"live_external_destination_is_not_replaced"] = @(
+        [manager connection:external] == other && [manager connection:second] == primary && [manager presentableConnections] == 2);
+    [manager screenDidDisconnect:[NSNotification notificationWithName:@"FixtureDisconnect" object:external]];
+    checks[@"external_disconnect_uses_original_removal"] = @(
+        manager.destroyed == 1 && [manager connection:external] == nil && [manager connection:second] == primary);
+
+    CGRect previousBounds = view.bounds;
+    activeScreen = first;
+    view.bounds = CGRectZero;
+    [manager screenDidDisconnect:secondOff];
+    BOOL held = [manager connection:second] == primary && primary.surface == drawing;
+    view.bounds = previousBounds;
+    [manager registerScreen:first];
+    checks[@"zero_area_transition_defers_until_window_is_sized"] = @(
+        held && [manager connection:first] == primary && [manager connection:second] == nil &&
+        [manager presentableConnections] == 1);
+}
+
 static void RPCDisplayFixture(NSString *documents,UIWindow *window) {
     NSMutableDictionary *checks=[NSMutableDictionary new];
     RPFixtureDisplay *main=[RPFixtureDisplay new];main.screen=window.windowScene.screen;
@@ -70,6 +205,7 @@ static void RPCDisplayFixture(NSString *documents,UIWindow *window) {
     BOOL accepted=((BOOL(*)(id,SEL,Class,id))objc_msgSend)(compatibility,sel_registerName("installForDisplayClass:surfaceProvider:"),invalid,^UIView *{return surface;});
     checks[@"incompatible_signature_is_rejected_without_swizzle"]=@(!accepted&&wrong==class_getMethodImplementation(invalid,sel_registerName("createView:showRightAway:")));
     surface.bounds=originalBounds;
+    RPCDisplayRegistryFixture(checks, surface, compatibility);
     checks[@"game_button_insets_preserved"]=@(UIEdgeInsetsEqualToEdgeInsets(originalInsets,window.rootViewController.additionalSafeAreaInsets));
     checks[@"camera_surface_keeps_full_bounds"]=@(CGRectEqualToRect(originalBounds,surface.bounds));
     checks[@"display_bridge_preserves_key_window"]=@(window.isKeyWindow);

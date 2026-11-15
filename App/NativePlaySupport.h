@@ -325,6 +325,9 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 @property(nonatomic,strong) RPSAdaptiveView *hud;
 @property(nonatomic,weak) UIWindow *gameWindow;
 @property(nonatomic,weak) UIView *gameSurface;
+@property(nonatomic,weak) UIScreen *gameDisplayScreen;
+@property(nonatomic,weak) UIWindow *displayWindow;
+@property(nonatomic,weak) UIView *displaySurface;
 @property(nonatomic,strong) CADisplayLink *geometryLink;
 @property(nonatomic,copy) NSString *geometrySignature;
 @property(nonatomic,strong) UIButton *button;
@@ -408,6 +411,15 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 }
 - (void)syncGameGeometry {
     if(UIApplication.sharedApplication.applicationState!=UIApplicationStateActive||!self.gameSurface)return;
+    UIView *surface = self.gameSurface;
+    UIWindow *window = surface.window;
+    UIScreen *screen = window.windowScene.screen;
+    if ((surface != self.displaySurface || window != self.displayWindow || screen != self.gameDisplayScreen)
+        && [RPSDisplayCompatibility syncGameDisplay:surface]) {
+        self.displaySurface = surface;
+        self.displayWindow = window;
+        self.gameDisplayScreen = screen;
+    }
     [self alignHUDToView:self.gameSurface];
     NSString *signature=[NSString stringWithFormat:@"%@|%@|%@|%@|%@",NSStringFromCGRect(self.overlay.windowScene.coordinateSpace.bounds),NSStringFromCGRect(self.gameWindow.bounds),NSStringFromCGRect(self.gameSurface.bounds),NSStringFromCGAffineTransform(self.hud.transform),NSStringFromCGPoint(self.hud.center)];
     if(![signature isEqual:self.geometrySignature]&&self.storage){
