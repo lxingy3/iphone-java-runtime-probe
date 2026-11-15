@@ -113,7 +113,8 @@ jobs:
               return subprocess.check_output(simctl+args, text=True, timeout=timeout).strip()
           devices=json.loads(cmd('list','devices','available','-j'))['devices']
           runtime='com.apple.CoreSimulator.SimRuntime.iOS-27-1'
-          profile=next(d['deviceTypeIdentifier'] for d in devices[runtime] if d['name'].startswith('iPhone') and d['name']!='iPhone Duo')
+          phones=[d for d in devices[runtime] if d['name'].startswith('iPhone')]
+          profile=next((d['deviceTypeIdentifier'] for d in phones if d['name']!='iPhone Duo'), phones[0]['deviceTypeIdentifier'])
           udid=cmd('create','AudioFixture',profile,runtime)
           result={}
           try:
