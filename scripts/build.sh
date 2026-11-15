@@ -793,7 +793,7 @@ if [[ "$sdk_name" == iphonesimulator ]]; then
 # Isolate the linked-SDK compatibility gate using the same scene/fullscreen/
 # landscape contract as the game. Only the SDK load-command field differs.
 mkdir -p build/DuoGeometryLegacy.app build/DuoGeometryModern.app
-xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" -fobjc-arc -fmodules App/DuoGeometryFixture.m -framework UIKit -framework Foundation -o build/DuoGeometryModern.app/DuoGeometry
+xcrun --sdk "$sdk_name" clang -target "$host_target" -isysroot "$(xcrun --sdk "$sdk_name" --show-sdk-path)" -fobjc-arc -fmodules App/DuoGeometryFixture.m -framework UIKit -framework Foundation -framework QuartzCore -framework Metal -o build/DuoGeometryModern.app/DuoGeometry
 python3 - <<'PY'
 import pathlib,plistlib,struct
 base=pathlib.Path('build/DuoGeometryModern.app/DuoGeometry').read_bytes()
@@ -982,13 +982,68 @@ try:
             if evidence.exists():break
             time.sleep(1)
         geometry[label]=json.loads(evidence.read_text())
-        command('xcrun','simctl','io',udid,'screenshot','--display=3',str(output/('duo-sdk-'+label+'.png')),check=False,timeout=30)
+        # Newly booted Duo render services can time out once before the first
+        # capture. Retry that read only; do not silently accept missing evidence.
+        shot_path=output/('duo-sdk-'+label+'.png')
+        for attempt in range(3):
+            try:
+                capture=command('xcrun','simctl','io',udid,'screenshot','--display=3',str(shot_path),check=False,timeout=30)
+                if capture.returncode==0 and shot_path.is_file():break
+            except subprocess.TimeoutExpired:
+                pass
+        else:raise RuntimeError('Duo geometry screenshot failed after three attempts: '+label)
         command('xcrun','simctl','terminate',udid,bundle,check=False,timeout=15)
     geometry['modernWindowFillsDisplay']=geometry['Modern']['windowAreaFraction']>.97
     geometry['logicalAreaGain']=(geometry['Modern']['window'][0]*geometry['Modern']['window'][1])/(geometry['Legacy']['window'][0]*geometry['Legacy']['window'][1])
     geometry['compatibilityGateObserved']=geometry['logicalAreaGain']>1.1
     geometry['actualGameTested']=False
     (output/'duo-sdk-compatibility.json').write_text(json.dumps(geometry,indent=2))
+    # Real GPU readback and compositor captures across synthetic transitions. This
+    # exercises our binding bridge; physical folding and the game stay unverified.
+    transition_bundle='local.astaps.DuoGeometryModern'
+    transition_container=pathlib.Path(command('xcrun','simctl','get_app_container',udid,transition_bundle,'data').stdout.strip())
+    transition_report=transition_container/'Documents/display-transition-fixture.json'
+    pending_frame=transition_container/'Documents/display-frame-pending.json'
+    frame_ack=transition_container/'Documents/display-frame-ack'
+    for label,flags in [('baseline',['--baseline-display-binding']),('candidate',[])]:
+        for stale in [transition_report,pending_frame,frame_ack]:
+            if stale.is_file():stale.unlink()
+        captures=[];captured_sequences=set()
+        command('xcrun','simctl','launch',udid,transition_bundle,'--display-transitions',*flags)
+        deadline=time.monotonic()+240
+        while time.monotonic()<deadline:
+            if transition_report.is_file(): break
+            if pending_frame.is_file():
+                frame=json.loads(pending_frame.read_text());sequence=frame['sequence']
+                if sequence not in captured_sequences:
+                    # Allow Core Animation to commit before reading the compositor,
+                    # independently of the already completed GPU readback.
+                    time.sleep(.35)
+                    attempts=[];result_frame=None
+                    # Duo has two powered compositors. The host's scene chooses
+                    # its display; do not mistake a screenshot of the other
+                    # screen for a stalled renderer.
+                    for display in (['1','3'] if profile=='duo' else [None]):
+                        capture=output/('display-frame-'+label+'-'+str(sequence)+'-'+str(display)+'.png')
+                        command('xcrun','simctl','io',udid,'screenshot',*(['--display='+display] if display else []),str(capture),timeout=40)
+                        checked=command('python3','scripts/check_display_frame.py',str(capture),str(frame['red']),str(frame['green']),check=False)
+                        observation=dict(sequence=sequence,display=display,**json.loads(checked.stdout));attempts.append(observation)
+                        if checked.returncode==0:result_frame=observation;break
+                    assert result_frame,attempts
+                    captures.append(result_frame)
+                    (output/('display-captures-'+label+'.json')).write_text(json.dumps(captures,indent=2))
+                    captured_sequences.add(sequence);frame_ack.write_text(str(sequence))
+            time.sleep(.2)
+        transition=json.loads(transition_report.read_text()) if transition_report.is_file() else {'passed':False,'failure':'Transition fixture timed out'}
+        (output/('display-transitions-'+label+'.json')).write_text(json.dumps(transition,indent=2))
+        command('xcrun','simctl','terminate',udid,transition_bundle,check=False,timeout=15)
+        assert not transition.get('failure'),transition
+        if label=='baseline':
+            assert transition.get('passed') is False and any(not row['binding'] for row in transition['steps']),transition
+        else:
+            assert transition.get('passed') is True,transition
+            assert transition['framesReadBack']==len(transition['steps'])==transition['drawablesSubmitted'],transition
+            assert len(captures)==5 and all(row['passed'] for row in captures),captures
     for variant,arguments in [('ObserverFixture',[]),('ObserverFixtureWrong',['--expect-observer-disabled']),('ObserverFixtureEmbedded',['--probe-embedded-runtime']),('ObserverFixtureRouting',['--expect-local-routing'])]:
         bundle={'ObserverFixtureEmbedded':'local.astaps.ObserverFixture.Embedded','ObserverFixtureRouting':'local.astaps.ObserverFixture.Routing'}.get(variant,'local.astaps.'+variant)
         command('xcrun','simctl','install',udid,'build/'+variant+'.app')
@@ -1020,13 +1075,17 @@ try:
             fixture_result['loopback_http']=http_result
             fixture_result['passed']=fixture_result.get('passed') is True and http_result.get('passed') is True
             support_report=fixture_container/'Documents/play-support-fixture.json'
-            for _ in range(30):
+            for _ in range(65):
                 if support_report.is_file(): break
                 time.sleep(1)
             support=json.loads(support_report.read_text()) if support_report.is_file() else {'passed':False,'error':'No native support report'}
             fixture_result['play_support']=support
             fixture_result['passed'] &= support.get('passed') is True
             (output/'play-support-fixture.json').write_text(json.dumps(support,indent=2))
+            display_report=fixture_container/'Documents/display-compatibility-fixture.json'
+            display=json.loads(display_report.read_text()) if display_report.is_file() else {'passed':False,'error':'Missing display fixture'}
+            (output/'display-compatibility-fixture.json').write_text(json.dumps(display,indent=2))
+            assert display.get('passed') is True, display
             support_png=fixture_container/'Documents/play-support-menu.png'
             if support_png.is_file(): shutil.copy2(support_png,output/'play-support-menu.png')
             entry_png=fixture_container/'Documents/play-support-minimap-icon.png'
