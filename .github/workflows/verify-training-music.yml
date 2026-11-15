@@ -1,0 +1,128 @@
+name: Verify training-room audio
+
+on:
+  push:
+    branches: [training-bgm-v2]
+    paths: [.github/workflows/verify-training-music.yml, App/NativeTrainingMusic.h]
+
+permissions:
+  contents: read
+
+jobs:
+  audio:
+    runs-on: xcode-27
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Exercise automatic playback on the native Apple audio stack
+        shell: bash
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_27.1.app/Contents/Developer
+          mkdir -p build/audio-check
+          cat > build/audio-fixture.m <<'OBJC'
+          #import <Foundation/Foundation.h>
+          #import <AVFoundation/AVFoundation.h>
+          // Session interruptions are supplied by iOS; this macOS test exercises track playback.
+          #define AVAudioSessionInterruptionType NSUInteger
+          #define AVAudioSessionInterruptionTypeBegan 1
+          #define AVAudioSessionInterruptionTypeKey @"FixtureInterruptionType"
+          #define AVAudioSessionInterruptionNotification @"FixtureAudioInterrupted"
+          #import "NativeTrainingMusic.h"
+
+          int main(int argc, char **argv) {
+              @autoreleasepool {
+              NSString *path = NSFileManager.defaultManager.currentDirectoryPath;
+              NSURL *root = [NSURL fileURLWithPath:[path stringByAppendingPathComponent:@"build"] isDirectory:YES];
+              NSURL *first = [root URLByAppendingPathComponent:@"first.wav"];
+              NSURL *second = [root URLByAppendingPathComponent:@"second.wav"];
+              NSURL *report = [root URLByAppendingPathComponent:@"audio-check/training-music-native.json"];
+              __block BOOL canMute = NO;
+              __block BOOL originalMuted = NO;
+              __block BOOL stoppedBeforeRestore = NO;
+              __block __weak RPSTrainingMusic *observedMusic = nil;
+              RPSTrainingMusic *music = [[RPSTrainingMusic alloc] initWithTracks:@[first,second] gameMusicGate:^BOOL(BOOL muted) {
+                  if (muted && !canMute) return NO;
+                  if (!muted) stoppedBeforeRestore = observedMusic.player == nil;
+                  originalMuted = muted;
+                  return YES;
+              }];
+              observedMusic = music;
+              NSMutableDictionary *checks = [NSMutableDictionary dictionary];
+              void (^record)(BOOL) = ^(BOOL finished) {
+                  BOOL passed = finished && checks.count == 14;
+                  for (NSNumber *value in checks.allValues) passed &= value.boolValue;
+                  NSDictionary *result = @{@"passed":@(passed),@"checks":checks,@"finished":@(finished),@"platform":@"macOS AVAudioPlayer"};
+                  [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:NULL] writeToURL:report atomically:YES];
+              };
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                  [music updateInTrainingRoom:NO foreground:YES];
+                  checks[@"training_music_silent_in_world"] = @(music.player == nil);
+                  [music updateInTrainingRoom:YES foreground:NO];
+                  checks[@"training_music_waits_for_scene"] = @(music.player == nil);
+                  record(NO);
+                  [music updateInTrainingRoom:YES foreground:YES];
+                  checks[@"audio_no_playback_before_mute"] = @(!originalMuted && music.player == nil);
+                  canMute = YES;
+                  [music updateInTrainingRoom:YES foreground:YES];
+                  AVAudioPlayer *player = music.player;
+                  checks[@"audio_only_after_music_channel_muted"] = @(originalMuted && player.isPlaying);
+                  checks[@"training_music_starts_first"] = @([player.url isEqual:first] && player.isPlaying);
+                  [music updateInTrainingRoom:YES foreground:YES];
+                  checks[@"training_music_poll_does_not_restart"] = @(player && music.player == player);
+                  [music updateInTrainingRoom:YES foreground:NO];
+                  checks[@"training_music_pauses_in_background"] = @(player && !player.isPlaying);
+                  canMute = NO;
+                  [music updateInTrainingRoom:YES foreground:YES];
+                  checks[@"audio_resume_waits_for_mixer"] = @(music.player == player && !player.isPlaying);
+                  canMute = YES;
+                  [music updateInTrainingRoom:YES foreground:YES];
+                  checks[@"training_music_resumes_same_track"] = @(music.player == player && player.isPlaying);
+                  record(NO);
+                  __block NSUInteger samples = 0;
+                  [NSTimer scheduledTimerWithTimeInterval:.05 repeats:YES block:^(NSTimer *timer) {
+                      NSURL *url = music.player.url;
+                      if ([url isEqual:second]) checks[@"training_music_advances_to_second"] = @YES;
+                      if ([checks[@"training_music_advances_to_second"] boolValue] && [url isEqual:first]) {
+                          [timer invalidate];
+                          checks[@"training_music_loops"] = @YES;
+                          [music updateInTrainingRoom:NO foreground:YES];
+                          checks[@"training_music_stays_stopped_after_exit"] = @(music.player == nil);
+                          checks[@"audio_restored_after_stop"] = @(!originalMuted && stoppedBeforeRestore);
+                          [music updateInTrainingRoom:YES foreground:YES];
+                          checks[@"training_music_next_visit_alternates"] = @([music.player.url isEqual:second]);
+                          [music updateInTrainingRoom:NO foreground:YES];
+                          record(YES);
+                      } else if (++samples == 240) {
+                          [timer invalidate];
+                          record(YES);
+                      }
+                  }];
+              });
+              NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:16];
+              while ([deadline timeIntervalSinceNow] > 0) {
+                  [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
+                  NSData *data = [NSData dataWithContentsOfURL:report];
+                  NSDictionary *result = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+                  if ([result[@"finished"] boolValue]) return [result[@"passed"] boolValue] ? 0 : 1;
+              }
+              return 2;
+              }
+          }
+          OBJC
+          xcrun --sdk macosx clang -fobjc-arc -I App build/audio-fixture.m \
+            -framework Foundation -framework AVFoundation -o build/audio-fixture
+          python3 - <<'PY'
+          import math, pathlib, struct, wave
+          for name, hz in [('first', 432), ('second', 528)]:
+              with wave.open(str(pathlib.Path('build')/(name+'.wav')), 'wb') as pcm:
+                  pcm.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
+                  pcm.writeframes(b''.join(struct.pack('<h',int(1000*math.sin(2*math.pi*hz*i/16000))) for i in range(19200)))
+          PY
+          build/audio-fixture
+          cat build/audio-check/training-music-native.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: native-training-music-check
+          path: build/audio-check/training-music-native.json
+          retention-days: 7
