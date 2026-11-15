@@ -1,7 +1,7 @@
 name: Build experimental iPhone runtime probe
 on:
   push:
-    branches: [minimap-lower-right-v11]
+    branches: [training-bgm-v1]
   workflow_dispatch:
     inputs:
       target:
