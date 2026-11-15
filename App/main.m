@@ -140,8 +140,10 @@ static void RPVerifyTrainingMusic(id controller, NSString *documents, NSMutableD
         checks[@"training_music_prepared"] = @NO;
         return;
     }
-    SEL init = sel_registerName("initWithTracks:");
-    id music = ((id(*)(id,SEL,id))objc_msgSend)([type alloc],init,@[first,second]);
+    SEL init = sel_registerName("initWithTracks:gameMusicGate:");
+    __block BOOL originalMusicMuted = NO;
+    BOOL (^gate)(BOOL) = ^BOOL(BOOL muted) { originalMusicMuted = muted; return YES; };
+    id music = ((id(*)(id,SEL,id,id))objc_msgSend)([type alloc],init,@[first,second],gate);
     id savedMusic = [controller valueForKey:@"trainingMusic"];
     NSDictionary *previous = [controller valueForKey:@"service"];
     id lastResponse = [controller valueForKey:@"lastResponse"];
@@ -159,7 +161,7 @@ static void RPVerifyTrainingMusic(id controller, NSString *documents, NSMutableD
     checks[@"training_music_waits_for_scene"] = @([music valueForKey:@"player"] == nil);
     setState(YES,YES,YES);
     id player = [music valueForKey:@"player"];
-    checks[@"training_music_starts_first"] = @([[player valueForKey:@"url"] isEqual:first]);
+    checks[@"training_music_starts_first"] = @(originalMusicMuted && [[player valueForKey:@"url"] isEqual:first]);
     setState(YES,YES,YES);
     checks[@"training_music_poll_does_not_restart"] = @(player && [music valueForKey:@"player"] == player);
     SEL ended = sel_registerName("trackEnded:successfully:");
@@ -175,7 +177,7 @@ static void RPVerifyTrainingMusic(id controller, NSString *documents, NSMutableD
     checks[@"training_music_resumes_same_track"] = @(looping && [music valueForKey:@"player"] == looping);
     setState(YES,NO,YES);
     ((void(*)(id,SEL,id,BOOL))objc_msgSend)(music,ended,looping,YES);
-    checks[@"training_music_stays_stopped_after_exit"] = @([music valueForKey:@"player"] == nil);
+    checks[@"training_music_stays_stopped_after_exit"] = @(!originalMusicMuted && [music valueForKey:@"player"] == nil);
     setState(YES,YES,YES);
     checks[@"training_music_next_visit_alternates"] = @([[[music valueForKey:@"player"] valueForKey:@"url"] isEqual:second]);
     setState(YES,NO,YES);
@@ -1257,6 +1259,25 @@ static NSString *NativeSHA256(NSString *path, void (^progress)(unsigned long lon
     return [NSString stringWithUTF8String:hex];
 }
 
+// Verify the complete derived cache once per launch with the platform SHA-256.
+// Java still validates its source/core bindings and rejects a changed archive.
+static NSString *NativeStartupCacheProof(NSString *working) {
+    NSString *directory=[working stringByAppendingPathComponent:@"startup-cache"];
+    NSString *archive=[directory stringByAppendingPathComponent:@"resources.zip"];
+    NSData *raw=[NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"bindings.json"]];
+    if(!raw||raw.length>16*1024*1024)return nil;
+    id binding=[NSJSONSerialization JSONObjectWithData:raw options:0 error:nil];
+    if(![binding isKindOfClass:NSDictionary.class])return nil;
+    NSString *expected=binding[@"archiveSha256"];
+    if(![expected isKindOfClass:NSString.class]||expected.length!=64||[expected rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location!=NSNotFound)return nil;
+    struct stat before,after;
+    if(stat(archive.fileSystemRepresentation,&before)!=0||!S_ISREG(before.st_mode)||before.st_size<=0||before.st_size>2147483648LL)return nil;
+    NSString *actual=NativeSHA256(archive,nil);
+    if(![actual isEqualToString:expected]||stat(archive.fileSystemRepresentation,&after)!=0||before.st_ino!=after.st_ino||before.st_dev!=after.st_dev||before.st_size!=after.st_size||before.st_mtimespec.tv_sec!=after.st_mtimespec.tv_sec||before.st_mtimespec.tv_nsec!=after.st_mtimespec.tv_nsec)return nil;
+    long long millis=(long long)after.st_mtimespec.tv_sec*1000+after.st_mtimespec.tv_nsec/1000000;
+    return [NSString stringWithFormat:@"%@:%lld:%lld",actual,(long long)after.st_size,millis];
+}
+
 // Same bytes and file for both implementations; run only in the simulator test harness.
 static BOOL ChecksumBenchmark(JNIEnv *env, jclass cls) {
     NSString *path = [Documents() stringByAppendingPathComponent:@"checksum-fixture.bin"];
@@ -1451,6 +1472,15 @@ static BOOL ChecksumBenchmark(JNIEnv *env, jclass cls) {
                 [@"--patch-module=java.base=" stringByAppendingString:[bundle stringByAppendingPathComponent:@"RuntimePatch.jar"]]
             ] mutableCopy];
             [arguments addObjectsFromArray:RPRuntimeMemoryArguments(server)];
+            if (server) {
+                NSTimeInterval began = NSProcessInfo.processInfo.systemUptime;
+                NSString *proof = NativeStartupCacheProof(working);
+                if (proof) [arguments addObject:[@"-Dlocal.startup.cache.nativeArchive=" stringByAppendingString:proof]];
+                WriteJSON(@"startup-cache-proof.json", @{
+                    @"pid": @(getpid()), @"verified": @(proof != nil),
+                    @"seconds": @(NSProcessInfo.processInfo.systemUptime - began)
+                });
+            }
             JavaVMOption options[16] = {0};
             if (arguments.count > sizeof(options)/sizeof(options[0])) {
                 [self updatePhase:@"failed" status:@"运行环境参数数量异常"]; return;

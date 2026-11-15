@@ -1,7 +1,9 @@
 #import <AVFoundation/AVFoundation.h>
 
+typedef BOOL (^RPSTrainingMusicGate)(BOOL muted);
+
 @interface RPSTrainingMusic : NSObject <AVAudioPlayerDelegate>
-- (instancetype)initWithTracks:(NSArray<NSURL *> *)tracks;
+- (instancetype)initWithTracks:(NSArray<NSURL *> *)tracks gameMusicGate:(RPSTrainingMusicGate)gate;
 - (void)updateInTrainingRoom:(BOOL)inTrainingRoom foreground:(BOOL)foreground;
 @end
 
@@ -14,14 +16,17 @@
 @property(nonatomic) BOOL foreground;
 @property(nonatomic) BOOL interrupted;
 @property(nonatomic) BOOL paused;
+@property(nonatomic) BOOL gameMusicMuted;
+@property(nonatomic, copy) RPSTrainingMusicGate gameMusicGate;
 @end
 
 @implementation RPSTrainingMusic
 
-- (instancetype)initWithTracks:(NSArray<NSURL *> *)tracks {
+- (instancetype)initWithTracks:(NSArray<NSURL *> *)tracks gameMusicGate:(RPSTrainingMusicGate)gate {
     self = [super init];
     if (self) {
         _tracks = [tracks copy];
+        _gameMusicGate = [gate copy];
         [NSNotificationCenter.defaultCenter addObserver:self
                                                selector:@selector(audioInterruption:)
                                                    name:AVAudioSessionInterruptionNotification
@@ -33,6 +38,7 @@
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
     [_player stop];
+    if (_gameMusicMuted && _gameMusicGate && NSThread.isMainThread) _gameMusicGate(NO);
 }
 
 - (void)updateInTrainingRoom:(BOOL)inTrainingRoom foreground:(BOOL)foreground {
@@ -46,13 +52,18 @@
 }
 
 - (void)updatePlayback {
-    if (!self.inTrainingRoom || !self.foreground || self.interrupted) {
+    if (!self.inTrainingRoom) {
+        if (self.gameMusicMuted && self.gameMusicGate(NO)) self.gameMusicMuted = NO;
+        return;
+    }
+    if (!self.foreground || self.interrupted || !self.gameMusicGate || !self.gameMusicGate(YES)) {
         if (self.player && !self.paused) {
             [self.player pause];
             self.paused = YES;
         }
         return;
     }
+    self.gameMusicMuted = YES;
     if (self.player) {
         if (self.paused) {
             self.paused = NO;

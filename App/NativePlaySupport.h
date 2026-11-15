@@ -1,6 +1,7 @@
 // Small host controls for a self-contained local runtime. No account credentials or external services.
 #import <WebKit/WebKit.h>
 #import <CoreText/CoreText.h>
+#import "NativeGameMusic.h"
 #import "NativeTrainingMusic.h"
 
 // UIKit reports these frames in this view's coordinates, including their margins.
@@ -418,11 +419,6 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 - (void)start:(NSString *)storage {
     if(self.storage) return;
     self.storage=storage; self.began=NSDate.date;
-    NSURL *musicDirectory = [NSBundle.mainBundle.resourceURL URLByAppendingPathComponent:@"TrainingMusic" isDirectory:YES];
-    self.trainingMusic = [[RPSTrainingMusic alloc] initWithTracks:@[
-        [musicDirectory URLByAppendingPathComponent:@"01-to-hone-mind-and-thought.m4a"],
-        [musicDirectory URLByAppendingPathComponent:@"02-swift-advance.m4a"],
-    ]];
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillResignActiveNotification
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification){
             [self updateTrainingMusicForeground:NO];
@@ -470,14 +466,23 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     }
 }
 - (void)updateTrainingMusicForeground:(BOOL)foreground {
-    if (!foreground) {
+    BOOL current = self.lastResponse && -self.lastResponse.timeIntervalSinceNow < 4 &&
+        [self.service[@"ready"] boolValue];
+    if (!foreground || !current) {
         [self.trainingMusic updateInTrainingRoom:self.trainingMusic.inTrainingRoom foreground:NO];
         return;
     }
-    BOOL worldReady = self.lastResponse && -self.lastResponse.timeIntervalSinceNow < 4 &&
-        [self.service[@"ready"] boolValue] && [self.service[@"worldReady"] boolValue];
+    BOOL worldReady = [self.service[@"worldReady"] boolValue];
     NSDictionary *dps = [self.service[@"dps"] isKindOfClass:NSDictionary.class] ? self.service[@"dps"] : nil;
-    [self.trainingMusic updateInTrainingRoom:worldReady && [dps[@"inArena"] boolValue] foreground:YES];
+    BOOL inRoom = [dps[@"inArena"] boolValue];
+    if (!self.trainingMusic && inRoom && worldReady) {
+        NSURL *musicDirectory = [NSBundle.mainBundle.resourceURL URLByAppendingPathComponent:@"TrainingMusic" isDirectory:YES];
+        self.trainingMusic = [[RPSTrainingMusic alloc] initWithTracks:@[
+            [musicDirectory URLByAppendingPathComponent:@"01-to-hone-mind-and-thought.m4a"],
+            [musicDirectory URLByAppendingPathComponent:@"02-swift-advance.m4a"],
+        ] gameMusicGate:RPSMakeGameMusicGate()];
+    }
+    [self.trainingMusic updateInTrainingRoom:inRoom foreground:worldReady];
 }
 - (void)update {
     BOOL foreground = UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
