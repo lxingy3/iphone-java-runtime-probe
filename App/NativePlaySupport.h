@@ -1,6 +1,7 @@
 // Small host controls for a self-contained local runtime. No account credentials or external services.
 #import <WebKit/WebKit.h>
 #import <CoreText/CoreText.h>
+#import "NativeTrainingMusic.h"
 
 // UIKit reports these frames in this view's coordinates, including their margins.
 // Keep related controls together on one side of an active fold; never infer a
@@ -332,6 +333,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 @property(nonatomic,strong) RPSTrainingChart *trainingChart;
 @property(nonatomic,strong) UIButton *trainingInteraction;
 @property(nonatomic,strong) UIButton *trainingReport;
+@property(nonatomic,strong) RPSTrainingMusic *trainingMusic;
 @property(nonatomic) BOOL trainingRequest;
 @property(nonatomic) BOOL interactionFetching;
 @property(nonatomic,strong) NSDictionary *interactionSnapshot;
@@ -416,6 +418,15 @@ static UIFont *RPSTrainingFont(CGFloat size) {
 - (void)start:(NSString *)storage {
     if(self.storage) return;
     self.storage=storage; self.began=NSDate.date;
+    NSURL *musicDirectory = [NSBundle.mainBundle.resourceURL URLByAppendingPathComponent:@"TrainingMusic" isDirectory:YES];
+    self.trainingMusic = [[RPSTrainingMusic alloc] initWithTracks:@[
+        [musicDirectory URLByAppendingPathComponent:@"01-to-hone-mind-and-thought.m4a"],
+        [musicDirectory URLByAppendingPathComponent:@"02-swift-advance.m4a"],
+    ]];
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillResignActiveNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification){
+            [self updateTrainingMusicForeground:NO];
+        }];
     self.geometryLink=[CADisplayLink displayLinkWithTarget:self selector:@selector(syncGameGeometry)];
     self.geometryLink.preferredFrameRateRange=CAFrameRateRangeMake(10,30,30);[self.geometryLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     [NSTimer scheduledTimerWithTimeInterval:.5 repeats:YES block:^(NSTimer *timer){ [self update]; }];
@@ -458,8 +469,20 @@ static UIFont *RPSTrainingFont(CGFloat size) {
         self.overlay.hidden=NO; return;
     }
 }
+- (void)updateTrainingMusicForeground:(BOOL)foreground {
+    if (!foreground) {
+        [self.trainingMusic updateInTrainingRoom:self.trainingMusic.inTrainingRoom foreground:NO];
+        return;
+    }
+    BOOL worldReady = self.lastResponse && -self.lastResponse.timeIntervalSinceNow < 4 &&
+        [self.service[@"ready"] boolValue] && [self.service[@"worldReady"] boolValue];
+    NSDictionary *dps = [self.service[@"dps"] isKindOfClass:NSDictionary.class] ? self.service[@"dps"] : nil;
+    [self.trainingMusic updateInTrainingRoom:worldReady && [dps[@"inArena"] boolValue] foreground:YES];
+}
 - (void)update {
-    [self attach]; if(!self.overlay || UIApplication.sharedApplication.applicationState!=UIApplicationStateActive) return;
+    BOOL foreground = UIApplication.sharedApplication.applicationState == UIApplicationStateActive;
+    [self updateTrainingMusicForeground:foreground];
+    [self attach]; if(!self.overlay || !foreground) return;
     NSDictionary *host=RPHostSnapshot();
     BOOL failed=[host[@"phase"] isEqual:@"failed"];
     BOOL healthy=self.lastResponse && -self.lastResponse.timeIntervalSinceNow<4 && [self.service[@"ready"] boolValue];

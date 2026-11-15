@@ -119,6 +119,71 @@ static void RPCFixtureHTTP(NSURL *url, NSString *documents) {
     }] resume];
 }
 
+// Generated PCM keeps the playback fixture independent of bundled music.
+static NSURL *RPTrainingMusicFixtureClip(NSString *documents, NSString *name) {
+    static const uint8_t header[] = {
+        'R','I','F','F',0x24,0x7d,0,0,'W','A','V','E','f','m','t',' ',
+        16,0,0,0,1,0,1,0,0x40,0x1f,0,0,0x80,0x3e,0,0,2,0,16,0,
+        'd','a','t','a',0,0x7d,0,0
+    };
+    NSMutableData *bytes = [NSMutableData dataWithBytes:header length:sizeof(header)];
+    [bytes increaseLengthBy:32000];
+    NSURL *url = [NSURL fileURLWithPath:[documents stringByAppendingPathComponent:name]];
+    return [bytes writeToURL:url atomically:YES] ? url : nil;
+}
+
+static void RPVerifyTrainingMusic(id controller, NSString *documents, NSMutableDictionary *checks) {
+    Class type = NSClassFromString(@"RPSTrainingMusic");
+    NSURL *first = RPTrainingMusicFixtureClip(documents, @"training-music-first.wav");
+    NSURL *second = RPTrainingMusicFixtureClip(documents, @"training-music-second.wav");
+    if (!type || !first || !second) {
+        checks[@"training_music_prepared"] = @NO;
+        return;
+    }
+    SEL init = sel_registerName("initWithTracks:");
+    id music = ((id(*)(id,SEL,id))objc_msgSend)([type alloc],init,@[first,second]);
+    id savedMusic = [controller valueForKey:@"trainingMusic"];
+    NSDictionary *previous = [controller valueForKey:@"service"];
+    id lastResponse = [controller valueForKey:@"lastResponse"];
+    [controller setValue:music forKey:@"trainingMusic"];
+    SEL update = sel_registerName("updateTrainingMusicForeground:");
+    void (^setState)(BOOL,BOOL,BOOL) = ^(BOOL ready, BOOL inRoom, BOOL active) {
+        [controller setValue:@{@"ready":@YES,@"worldReady":@(ready),@"gameplayVisible":@NO,
+                               @"dps":@{@"inArena":@(inRoom)}} forKey:@"service"];
+        [controller setValue:NSDate.date forKey:@"lastResponse"];
+        ((void(*)(id,SEL,BOOL))objc_msgSend)(controller,update,active);
+    };
+    setState(YES,NO,YES);
+    checks[@"training_music_silent_in_world"] = @([music valueForKey:@"player"] == nil);
+    setState(NO,YES,YES);
+    checks[@"training_music_waits_for_scene"] = @([music valueForKey:@"player"] == nil);
+    setState(YES,YES,YES);
+    id player = [music valueForKey:@"player"];
+    checks[@"training_music_starts_first"] = @([[player valueForKey:@"url"] isEqual:first]);
+    setState(YES,YES,YES);
+    checks[@"training_music_poll_does_not_restart"] = @(player && [music valueForKey:@"player"] == player);
+    SEL ended = sel_registerName("trackEnded:successfully:");
+    ((void(*)(id,SEL,id,BOOL))objc_msgSend)(music,ended,player,YES);
+    id secondPlayer = [music valueForKey:@"player"];
+    checks[@"training_music_advances_to_second"] = @([[secondPlayer valueForKey:@"url"] isEqual:second]);
+    ((void(*)(id,SEL,id,BOOL))objc_msgSend)(music,ended,secondPlayer,YES);
+    id looping = [music valueForKey:@"player"];
+    checks[@"training_music_loops"] = @([[looping valueForKey:@"url"] isEqual:first]);
+    setState(YES,YES,NO);
+    checks[@"training_music_pauses_in_background"] = @(looping && ![[looping valueForKey:@"playing"] boolValue]);
+    setState(YES,YES,YES);
+    checks[@"training_music_resumes_same_track"] = @(looping && [music valueForKey:@"player"] == looping);
+    setState(YES,NO,YES);
+    ((void(*)(id,SEL,id,BOOL))objc_msgSend)(music,ended,looping,YES);
+    checks[@"training_music_stays_stopped_after_exit"] = @([music valueForKey:@"player"] == nil);
+    setState(YES,YES,YES);
+    checks[@"training_music_next_visit_alternates"] = @([[[music valueForKey:@"player"] valueForKey:@"url"] isEqual:second]);
+    setState(YES,NO,YES);
+    [controller setValue:savedMusic forKey:@"trainingMusic"];
+    [controller setValue:previous forKey:@"service"];
+    [controller setValue:lastResponse forKey:@"lastResponse"];
+}
+
 // Exercise the real overlay loaded from the dylib, with a loopback fixture service.
 // It checks touch passthrough and constrained layouts, not physical fold transitions.
 static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
@@ -311,6 +376,7 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
                         [web evaluateJavaScript:@"document.getElementById('start').click()" completionHandler:nil];
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(), ^{
                             checks[@"training_action_closes_and_restores_game_focus"]=@([controller presentedViewController]==nil && gameWindow.isKeyWindow && !overlay.isKeyWindow);
+                            RPVerifyTrainingMusic(controller,documents,checks);
                             BOOL passed=YES;for(NSNumber *v in checks.allValues)passed &= v.boolValue;
                             NSDictionary *report=@{@"passed":@(passed),@"checks":checks,@"layouts":layouts,@"pageDiagnostics":[panel valueForKey:@"diagnostics"]?:@{},@"render":render?:@{},@"javascriptError":error.localizedDescription?:@"",@"physical_fold_verified":@NO,@"actual_game_tested":@NO};
                             [[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil] writeToFile:[documents stringByAppendingPathComponent:@"play-support-fixture.json"] atomically:YES];
