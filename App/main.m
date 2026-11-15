@@ -189,6 +189,11 @@ static void RPVerifyTrainingMusic(id controller, NSString *documents, NSMutableD
 
 // Exercise the real overlay loaded from the dylib, with a loopback fixture service.
 // It checks touch passthrough and constrained layouts, not physical fold transitions.
+static void RPCFixtureSetTrainingInteraction(id controller, NSDictionary *snapshot) {
+    [controller setValue:snapshot forKey:@"interactionSnapshot"];
+    [controller setValue:NSDate.date forKey:@"interactionResponseAt"];
+}
+
 static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
     RPCDisplayFixture(documents,gameWindow);
     NSString *storage=[documents stringByAppendingPathComponent:@"PlaySupportFixture"];
@@ -256,6 +261,9 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         checks[@"stale_statistics_not_presented_as_live"]=@([dpsLabel.text containsString:@"正在同步"]);
         [controller setValue:NSDate.date forKey:@"lastResponse"];
         NSDictionary *lab=@{@"mode":@"lab",@"phase":@"ready",@"active":@NO,@"canStart":@YES,@"elapsedSeconds":@0,@"totalDamage":@123456,@"averageDps":@12345,@"maxHit":@98765,@"config":@{@"level":@105,@"defense":@100,@"chart":@YES,@"resistanceHud":@YES,@"resistances":@{@"fire":@70}},@"curve":@[@{@"seconds":@0,@"dps":@0},@{@"seconds":@1,@"dps":@4000}],@"activePanel":@{@"name":@"测试角色",@"hp":@22000,@"attack":@1500,@"defense":@800,@"mastery":@270,@"crit":@75,@"critDamage":@180,@"recharge":@140}};
+        NSDictionary *nearTarget = @{@"inArena":@YES, @"gameplayVisible":@YES, @"mode":@"lab",
+                                     @"phase":@"ready", @"canStart":@YES};
+        RPCFixtureSetTrainingInteraction(controller, nearTarget);
         [controller setValue:@{@"ready":@YES,@"worldReady":@YES,@"gameplayVisible":@YES,@"dps":lab} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         UIButton *interaction=[controller valueForKey:@"trainingInteraction"];
         checks[@"idle_dummy_proximity_interaction"]=@(!interaction.hidden&&[interaction.currentTitle isEqual:@"开始挑战"]);
@@ -266,19 +274,57 @@ static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
         for(NSString *key in @[@"button",@"trainingInteraction",@"trainingReport",@"trainingChart",@"trainingDetails",@"trainingPanel"])menuHidesAll&=[[controller valueForKey:key] isHidden];
         checks[@"game_menu_hides_training_hud_and_touch_targets"]=@(menuHidesAll&&![[controller valueForKey:@"messageVisible"] boolValue]);
         [controller setValue:@{@"ready":@YES,@"worldReady":@YES,@"gameplayVisible":@YES,@"dps":lab} forKey:@"service"];
+        RPCFixtureSetTrainingInteraction(controller, nearTarget);
         ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         checks[@"closing_game_menu_restores_training_hud"]=@(![[controller valueForKey:@"trainingReport"] isHidden]&&!interaction.hidden);
         checks[@"lab_hud_max_hit_and_chart"]=@([dpsLabel.text containsString:@"98765"]&&![[controller valueForKey:@"trainingChart"] isHidden]&&![[controller valueForKey:@"trainingPanel"] isHidden]&&![[controller valueForKey:@"trainingDetails"] isHidden]);
         // Statistics are stale after 3s; 4s is already the disconnected/loading state.
         [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-3.5] forKey:@"lastResponse"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         checks[@"lab_stale_statistics_visible"]=@([dpsLabel.text containsString:@"正在同步"]);[controller setValue:NSDate.date forKey:@"lastResponse"];
-        [controller setValue:@{@"ready":@YES,@"worldReady":@YES,@"gameplayVisible":@YES,@"dps":@{@"inArena":@YES,@"station":@{@"label":@"角色属性",@"section":@"party"}}} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        NSDictionary *partyStation = @{@"inArena":@YES, @"gameplayVisible":@YES,
+                                     @"station":@{@"label":@"角色属性", @"section":@"party"}};
+        [controller setValue:@{@"ready":@YES, @"worldReady":@YES, @"gameplayVisible":@YES,
+                               @"dps":partyStation} forKey:@"service"];
+        RPCFixtureSetTrainingInteraction(controller, partyStation);
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         checks[@"room_station_proximity_action"]=@(!interaction.hidden&&[interaction.currentTitle isEqual:@"角色属性"]);
-        CFTimeInterval interactionAt=CACurrentMediaTime();
-        ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("updateTrainingInteraction:"),@{@"inArena":@YES,@"station":@{@"label":@"元素设置",@"section":@"elements"}});
+
+        NSDictionary *elementStation = @{@"inArena":@YES, @"gameplayVisible":@YES,
+                                        @"station":@{@"label":@"元素设置", @"section":@"elements"}};
+        RPCFixtureSetTrainingInteraction(controller, elementStation);
+        CFTimeInterval interactionAt = CACurrentMediaTime();
+        ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("updateTrainingInteraction:"),elementStation);
         checks[@"station_switch_applies_on_receipt_without_timer"]=@([interaction.currentTitle isEqual:@"元素设置"]&&CACurrentMediaTime()-interactionAt<.016);
-        ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("updateTrainingInteraction:"),@{@"inArena":@NO});
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        checks[@"slow_statistics_cannot_replace_current_station"]=@([interaction.currentTitle isEqual:@"元素设置"]);
+
+        NSDictionary *outside = @{@"inArena":@NO, @"gameplayVisible":@YES};
+        RPCFixtureSetTrainingInteraction(controller, outside);
+        ((void(*)(id,SEL,id))objc_msgSend)(controller,sel_registerName("updateTrainingInteraction:"),outside);
         checks[@"leaving_station_hides_interaction_immediately"]=@(interaction.hidden);
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        checks[@"slow_statistics_cannot_restore_departed_station"]=@(interaction.hidden);
+        RPCFixtureSetTrainingInteraction(controller, partyStation);
+        [controller setValue:[NSDate dateWithTimeIntervalSinceNow:-1] forKey:@"interactionResponseAt"];
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
+        checks[@"expired_proximity_does_not_fall_back_to_old_status"]=@(interaction.hidden);
+        interaction.hidden = NO;
+        ((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("trainingInteract"));
+        checks[@"expired_station_tap_cannot_open_wrong_panel"]=@(interaction.hidden &&
+            ![controller valueForKey:@"presentedViewController"] && ![[controller valueForKey:@"trainingRequest"] boolValue]);
+
+        CFRunLoopRef loop = CFRunLoopGetMain();
+        CFStringRef tracking = CFSTR("FixtureStationControlTracking");
+        CFRunLoopAddCommonMode(loop, tracking);
+        NSTimer *defaultOnly = [NSTimer scheduledTimerWithTimeInterval:10 repeats:NO block:^(NSTimer *timer) {}];
+        NSTimer *stationTimer = ((id(*)(id,SEL))objc_msgSend)(controller,sel_registerName("scheduleTrainingInteraction"));
+        checks[@"station_polling_continues_in_tracking_mode"]=@(stationTimer &&
+            CFRunLoopContainsTimer(loop, (__bridge CFRunLoopTimerRef)stationTimer, tracking) &&
+            !CFRunLoopContainsTimer(loop, (__bridge CFRunLoopTimerRef)defaultOnly, tracking));
+        [stationTimer invalidate];
+        [defaultOnly invalidate];
+
+        RPCFixtureSetTrainingInteraction(controller, nearTarget);
         [controller setValue:@{@"ready":@YES,@"worldReady":@YES,@"gameplayVisible":@YES,@"dps":lab} forKey:@"service"];((void(*)(id,SEL))objc_msgSend)(controller,sel_registerName("update"));
         UIView *root=[controller valueForKey:@"hud"];
         UIView *source=[UIView new];[gameWindow.rootViewController.view addSubview:source];

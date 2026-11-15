@@ -426,7 +426,7 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.geometryLink=[CADisplayLink displayLinkWithTarget:self selector:@selector(syncGameGeometry)];
     self.geometryLink.preferredFrameRateRange=CAFrameRateRangeMake(10,30,30);[self.geometryLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     [NSTimer scheduledTimerWithTimeInterval:.5 repeats:YES block:^(NSTimer *timer){ [self update]; }];
-    [NSTimer scheduledTimerWithTimeInterval:.1 repeats:YES block:^(NSTimer *timer){ [self pollTrainingInteraction]; }];
+    [self scheduleTrainingInteraction];
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil
         queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification){
             if(!self.readyAt || self.saving) return;
@@ -576,10 +576,14 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     self.trainingInteraction.frame=CGRectMake(controls.origin.x+controls.size.width*.55,controls.origin.y+controls.size.height*.46,MIN(160,controls.size.width*.40),44);
     self.trainingReport.frame=CGRectMake(area.origin.x+64,CGRectGetMaxY(area)-52,44,44);
 }
+- (NSDictionary *)freshTrainingInteraction {
+    if (!self.interactionResponseAt || -self.interactionResponseAt.timeIntervalSinceNow >= .4) return nil;
+    return self.interactionSnapshot;
+}
+
 - (void)updateTrainingHUD:(NSDictionary *)dps {
     NSDictionary *config=dps[@"config"];BOOL exists=[dps[@"mode"] isEqual:@"lab"];
-    NSDictionary *interaction=(dps&&self.interactionResponseAt&&-self.interactionResponseAt.timeIntervalSinceNow<.4)?self.interactionSnapshot:dps;
-    [self updateTrainingInteraction:interaction];
+    [self updateTrainingInteraction:dps ? [self freshTrainingInteraction] : nil];
     self.trainingReport.hidden=!exists;
     self.trainingChart.hidden=!exists||![config[@"chart"] boolValue];self.trainingChart.points=dps[@"curve"]?:@[];[self.trainingChart setNeedsDisplay];
     self.trainingDetails.hidden=!exists||![config[@"resistanceHud"] boolValue];
@@ -592,6 +596,10 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     [self.view setNeedsLayout];
 }
 - (void)updateTrainingInteraction:(NSDictionary *)dps {
+    if (![dps[@"inArena"] boolValue] || ![dps[@"gameplayVisible"] boolValue]) {
+        self.trainingInteraction.hidden = YES;
+        return;
+    }
     BOOL exists=[dps[@"mode"] isEqual:@"lab"];
     NSDictionary *station=[dps[@"station"] isKindOfClass:NSDictionary.class]?dps[@"station"]:nil;
     BOOL nearby=[station[@"label"] length]>0;
@@ -600,9 +608,24 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     NSString *action=nearby?station[@"label"]:([dps[@"phase"] isEqual:@"finished"]?@"再次布置":([dps[@"active"] boolValue]?@"停止计时":@"开始挑战"));
     if(![self.trainingInteraction.currentTitle isEqual:action])[self.trainingInteraction setTitle:action forState:UIControlStateNormal];
 }
+- (NSTimer *)scheduleTrainingInteraction {
+    NSTimer *timer = [NSTimer timerWithTimeInterval:.1 repeats:YES block:^(NSTimer *timer) {
+        [self pollTrainingInteraction];
+    }];
+    [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
+    return timer;
+}
+
 - (void)pollTrainingInteraction {
-    if(self.interactionFetching||self.trainingRequest||self.presentedViewController||self.statusMenu||UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;
-    if((![self.service[@"dps"][@"inArena"] boolValue]&&![self.service[@"dps"][@"mode"] length])||!self.lastResponse||-self.lastResponse.timeIntervalSinceNow>3)return;
+    if (self.trainingRequest || self.presentedViewController || self.statusMenu ||
+        UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+    if (!self.trainingInteraction.hidden && ![self freshTrainingInteraction]) {
+        [self updateTrainingInteraction:nil];
+    }
+    NSDictionary *dps = self.service[@"dps"];
+    if (self.interactionFetching || ![self.service[@"worldReady"] boolValue] ||
+        (![dps[@"inArena"] boolValue] && ![dps[@"mode"] isEqual:@"lab"]) ||
+        !self.lastResponse || -self.lastResponse.timeIntervalSinceNow > 3) return;
     NSString *token=[NSString stringWithContentsOfFile:[self.storage stringByAppendingPathComponent:@"server/local-maintenance.token"] encoding:NSUTF8StringEncoding error:nil];
     if(!token.length)return;
     self.interactionFetching=YES;
@@ -624,7 +647,13 @@ static UIFont *RPSTrainingFont(CGFloat size) {
     }] resume];
 }
 - (void)trainingInteract {
-    if(self.trainingRequest)return;NSDictionary *dps=(self.interactionResponseAt&&-self.interactionResponseAt.timeIntervalSinceNow<.4)?self.interactionSnapshot:self.service[@"dps"];
+    if (self.trainingRequest || self.trainingInteraction.hidden) return;
+    NSDictionary *dps = [self freshTrainingInteraction];
+    if (![dps[@"inArena"] boolValue] || ![dps[@"gameplayVisible"] boolValue]) {
+        [self updateTrainingInteraction:nil];
+        [self pollTrainingInteraction];
+        return;
+    }
     NSString *section=dps[@"station"][@"section"];
     if([@[@"target",@"elements",@"party",@"display",@"supplies",@"timing"] containsObject:section]){
         [self showTraining];UINavigationController *nav=(UINavigationController *)self.presentedViewController;
