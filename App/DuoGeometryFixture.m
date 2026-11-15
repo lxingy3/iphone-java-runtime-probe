@@ -1,5 +1,6 @@
 // Standalone geometry probe. No game code, assets, accounts or runtime payload.
 #import <UIKit/UIKit.h>
+#import "DisplayTransitionFixture.h"
 @interface DuoGeometryController : UIViewController
 @end
 @implementation DuoGeometryController
@@ -16,6 +17,9 @@
     self.window=[[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];self.window.rootViewController=[DuoGeometryController new];[self.window makeKeyAndVisible];
 }
 - (void)sceneDidBecomeActive:(UIScene *)scene {
+    if([NSProcessInfo.processInfo.arguments containsObject:@"--display-transitions"]){
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{RPCStartDisplayTransitions(self.window);});return;
+    }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,2*NSEC_PER_SEC),dispatch_get_main_queue(),^{
         UIWindowScene *ws=(UIWindowScene *)scene;CGRect w=self.window.bounds,s=ws.screen.bounds,v=self.window.rootViewController.view.bounds;
         NSDictionary *report=@{@"window":@[@(w.size.width),@(w.size.height)],@"screen":@[@(s.size.width),@(s.size.height)],@"root":@[@(v.size.width),@(v.size.height)],@"windowAreaFraction":@(w.size.width*w.size.height/(s.size.width*s.size.height)),@"rootFillsWindow":@(fabs(w.size.width*w.size.height-v.size.width*v.size.height)<1),@"bundle":NSBundle.mainBundle.bundleIdentifier};

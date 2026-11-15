@@ -24,6 +24,7 @@ static int RPDirectoriesMatch(const char *left, const char *right) {
 extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
 extern NSDictionary *RPHostSnapshot(void);
 
+#import "DisplayCompatibilityFixture.h"
 // Simulator fixture only: exercise a real synchronous native fault through the
 // installed JVM handler, then the host's preinstalled recovery handler. These
 // handlers are never compiled into the production embedding libraries.
@@ -189,6 +190,7 @@ static void RPVerifyTrainingMusic(id controller, NSString *documents, NSMutableD
 // Exercise the real overlay loaded from the dylib, with a loopback fixture service.
 // It checks touch passthrough and constrained layouts, not physical fold transitions.
 static void RPCSupportFixture(NSString *documents, UIWindow *gameWindow) {
+    RPCDisplayFixture(documents,gameWindow);
     NSString *storage=[documents stringByAppendingPathComponent:@"PlaySupportFixture"];
     NSString *server=[storage stringByAppendingPathComponent:@"server"];
     [NSFileManager.defaultManager createDirectoryAtPath:server withIntermediateDirectories:YES attributes:nil error:nil];
@@ -545,6 +547,7 @@ int main(int argc,char **argv) { @autoreleasepool { return UIApplicationMain(arg
 extern BOOL RPHostStart(NSString *, NSString *, BOOL, NSError **);
 extern NSDictionary *RPHostSnapshot(void);
 extern void RPHostSceneEvent(NSString *);
+#import "NativeDisplayCompatibility.h"
 #import "NativePlaySupport.h"
 
 static NSString *RPCReportDirectory;
@@ -932,6 +935,7 @@ __attribute__((constructor)) static void RPCInitialize(void) {
             !([bundle isEqualToString:expected] || [bundle hasPrefix:[expected stringByAppendingString:@"."]])) return;
         if (![[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] isEqual:RPCConfiguration[@"ClientVersion"]] ||
             ![[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] isEqual:RPCConfiguration[@"ClientBuild"]]) return;
+        [RPSDisplayCompatibility install];
         NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
         RPCReportDirectory = [documents stringByAppendingPathComponent:@"RuntimeIntegration"];
         [NSFileManager.defaultManager createDirectoryAtPath:RPCReportDirectory withIntermediateDirectories:YES attributes:nil error:nil];
