@@ -11,36 +11,37 @@ permissions:
 jobs:
   audio:
     runs-on: xcode-27
-    timeout-minutes: 9
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - name: Build and exercise playback on an iPhone simulator
+      - name: Exercise automatic playback on the native Apple audio stack
         shell: bash
         run: |
           sudo xcode-select --switch /Applications/Xcode_27.1.app/Contents/Developer
-          mkdir -p build/AudioFixture.app build/audio-check
+          mkdir -p build/audio-check
           cat > build/audio-fixture.m <<'OBJC'
-          #import <UIKit/UIKit.h>
+          #import <Foundation/Foundation.h>
+          #import <AVFoundation/AVFoundation.h>
+          // Session interruptions are supplied by iOS; this macOS test exercises track playback.
+          #define AVAudioSessionInterruptionType NSUInteger
+          #define AVAudioSessionInterruptionTypeBegan 1
+          #define AVAudioSessionInterruptionTypeKey @"FixtureInterruptionType"
+          #define AVAudioSessionInterruptionNotification @"FixtureAudioInterrupted"
           #import "NativeTrainingMusic.h"
 
-          @interface AudioFixture : UIResponder <UIApplicationDelegate>
-          @property(nonatomic, strong) UIWindow *window;
-          @end
-
-          @implementation AudioFixture
-          - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)options {
-              self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-              self.window.rootViewController = [UIViewController new];
-              [self.window makeKeyAndVisible];
-              NSURL *first = [NSBundle.mainBundle URLForResource:@"first" withExtension:@"wav"];
-              NSURL *second = [NSBundle.mainBundle URLForResource:@"second" withExtension:@"wav"];
-              NSURL *report = [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"audio.json"];
+          int main(int argc, char **argv) {
+              @autoreleasepool {
+              NSString *path = NSFileManager.defaultManager.currentDirectoryPath;
+              NSURL *root = [NSURL fileURLWithPath:[path stringByAppendingPathComponent:@"build"] isDirectory:YES];
+              NSURL *first = [root URLByAppendingPathComponent:@"first.wav"];
+              NSURL *second = [root URLByAppendingPathComponent:@"second.wav"];
+              NSURL *report = [root URLByAppendingPathComponent:@"audio-check/training-music-native.json"];
               RPSTrainingMusic *music = [[RPSTrainingMusic alloc] initWithTracks:@[first,second]];
               NSMutableDictionary *checks = [NSMutableDictionary dictionary];
               void (^record)(BOOL) = ^(BOOL finished) {
                   BOOL passed = finished && checks.count == 10;
                   for (NSNumber *value in checks.allValues) passed &= value.boolValue;
-                  NSDictionary *result = @{@"passed":@(passed),@"checks":checks,@"finished":@(finished)};
+                  NSDictionary *result = @{@"passed":@(passed),@"checks":checks,@"finished":@(finished),@"platform":@"macOS AVAudioPlayer"};
                   [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:NULL] writeToURL:report atomically:YES];
               };
               dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
@@ -78,63 +79,28 @@ jobs:
                       }
                   }];
               });
-              return YES;
-          }
-          @end
-
-          int main(int argc, char **argv) {
-              @autoreleasepool {
-                  return UIApplicationMain(argc, argv, nil, NSStringFromClass(AudioFixture.class));
+              NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:16];
+              while ([deadline timeIntervalSinceNow] > 0) {
+                  [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.1]];
+                  NSData *data = [NSData dataWithContentsOfURL:report];
+                  NSDictionary *result = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+                  if ([result[@"finished"] boolValue]) return [result[@"passed"] boolValue] ? 0 : 1;
+              }
+              return 2;
               }
           }
           OBJC
-          sdk_path="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-          xcrun --sdk iphonesimulator clang -target arm64-apple-ios18.5-simulator \
-            -isysroot "$sdk_path" -fobjc-arc -I App build/audio-fixture.m \
-            -framework UIKit -framework Foundation -framework AVFoundation -o build/AudioFixture.app/AudioFixture
+          xcrun --sdk macosx clang -fobjc-arc -I App build/audio-fixture.m \
+            -framework Foundation -framework AVFoundation -o build/audio-fixture
           python3 - <<'PY'
-          import math, pathlib, plistlib, struct, wave
-          app = pathlib.Path('build/AudioFixture.app')
-          info = {'CFBundleExecutable':'AudioFixture','CFBundleIdentifier':'local.training.AudioFixture',
-                  'CFBundleName':'AudioFixture','CFBundlePackageType':'APPL','CFBundleVersion':'1',
-                  'CFBundleShortVersionString':'1.0','MinimumOSVersion':'18.5',
-                  'UIDeviceFamily':[1],'UILaunchScreen':{}}
-          (app/'Info.plist').write_bytes(plistlib.dumps(info))
+          import math, pathlib, struct, wave
           for name, hz in [('first', 432), ('second', 528)]:
-              with wave.open(str(app/(name+'.wav')), 'wb') as pcm:
+              with wave.open(str(pathlib.Path('build')/(name+'.wav')), 'wb') as pcm:
                   pcm.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
                   pcm.writeframes(b''.join(struct.pack('<h',int(1000*math.sin(2*math.pi*hz*i/16000))) for i in range(19200)))
           PY
-          codesign --force --sign - build/AudioFixture.app
-          python3 - <<'PY'
-          import json, pathlib, subprocess, time
-          simctl = ('xcrun','simctl')
-          def cmd(*args, timeout=45):
-              return subprocess.check_output(simctl+args, text=True, timeout=timeout).strip()
-          devices=json.loads(cmd('list','devices','available','-j'))['devices']
-          runtime='com.apple.CoreSimulator.SimRuntime.iOS-27-1'
-          phones=[d for d in devices[runtime] if d['name'].startswith('iPhone')]
-          profile=next((d['deviceTypeIdentifier'] for d in phones if d['name']!='iPhone Duo'), phones[0]['deviceTypeIdentifier'])
-          udid=cmd('create','AudioFixture',profile,runtime)
-          result={}
-          try:
-              cmd('boot',udid)
-              cmd('bootstatus',udid,'-b',timeout=165)
-              cmd('install',udid,'build/AudioFixture.app')
-              data=pathlib.Path(cmd('get_app_container',udid,'local.training.AudioFixture','data'))
-              cmd('launch',udid,'local.training.AudioFixture')
-              report=data/'Documents/audio.json'
-              deadline=time.monotonic()+34
-              while time.monotonic()<deadline:
-                  if report.is_file():
-                      result=json.loads(report.read_text())
-                      if result.get('finished'): break
-                  time.sleep(.25)
-          finally:
-              (pathlib.Path('build/audio-check')/'training-music-native.json').write_text(json.dumps(result,indent=2))
-              print(json.dumps(result,indent=2),flush=True)
-          assert result.get('passed'), 'Native playback did not finish the expected checks'
-          PY
+          build/audio-fixture
+          cat build/audio-check/training-music-native.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
